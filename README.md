@@ -1,8 +1,8 @@
 # 📊 Dashboard - Previsão de Reclamações com Modelos Supervisionados
 
-![Python](https://img.shields.io/badge/python-v3.8+-blue.svg)
-![Streamlit](https://img.shields.io/badge/streamlit-v1.28.0-red.svg)
-![Scikit-learn](https://img.shields.io/badge/scikit--learn-v1.3.2-orange.svg)
+![Python](https://img.shields.io/badge/python-+-blue.svg)
+![Streamlit](https://img.shields.io/badge/streamlit--red.svg)
+![Scikit-learn](https://img.shields.io/badge/scikit--learn--orange.svg)
 
 ## 🎯 Sobre o Projeto
 

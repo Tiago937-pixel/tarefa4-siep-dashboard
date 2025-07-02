@@ -206,105 +206,25 @@ def load_and_process_data():
 @st.cache_data
 def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=True):
     """Aplica SMOTE e RFE aos dados"""
+    X = df_processed.drop(columns=[target_var])
+    y = df_processed[target_var]
     
-    # Debug: mostrar informações dos dados de entrada
-    st.write("🔍 **Debug - Dados de entrada:**")
-    st.write(f"- Shape do dataset: {df_processed.shape}")
-    st.write(f"- Colunas disponíveis: {list(df_processed.columns)}")
-    st.write(f"- Target variable: {target_var}")
-    
-    # Verificações iniciais
-    if df_processed is None or len(df_processed) == 0:
-        st.error("❌ Dataset vazio!")
-        return None, None, []
-    
-    if target_var not in df_processed.columns:
-        st.error(f"❌ Variável target '{target_var}' não encontrada!")
-        st.write(f"Colunas disponíveis: {list(df_processed.columns)}")
-        return None, None, []
-    
-    # Separar features e target
-    all_columns = df_processed.columns.tolist()
-    feature_columns = [col for col in all_columns if col != target_var]
-    
-    st.write(f"🎯 **Features identificadas ({len(feature_columns)}):** {feature_columns[:10]}{'...' if len(feature_columns) > 10 else ''}")
-    
-    if len(feature_columns) == 0:
-        st.error("❌ Nenhuma feature disponível após remover target!")
-        return None, None, []
-    
-    X = df_processed[feature_columns].copy()
-    y = df_processed[target_var].copy()
-    
-    st.write(f"📊 **Dados extraídos:**")
-    st.write(f"- X shape: {X.shape}")
-    st.write(f"- y shape: {y.shape}")
-    st.write(f"- Tipos de dados em X: {X.dtypes.value_counts().to_dict()}")
-    
-    # Limpar e converter dados
+    # Garantir que todos os dados são numéricos e limpos
     X_clean = X.copy()
-    numeric_features = []
+    y_clean = y.copy()
     
+    # Remover valores infinitos e NaN
     for col in X_clean.columns:
-        try:
-            # Tentar converter para numérico
-            X_clean[col] = pd.to_numeric(X_clean[col], errors='coerce')
-            
-            # Substituir inf por NaN
+        if X_clean[col].dtype in ['int64', 'float64']:
+            # Substituir inf por NaN, depois por mediana
             X_clean[col] = X_clean[col].replace([np.inf, -np.inf], np.nan)
-            
-            # Preencher NaN com mediana
             if X_clean[col].isnull().sum() > 0:
-                median_val = X_clean[col].median()
-                if pd.isna(median_val):
-                    median_val = 0
-                X_clean[col] = X_clean[col].fillna(median_val)
-            
-            # Se a coluna tem variância, manter
-            if X_clean[col].std() > 0:
-                numeric_features.append(col)
-                
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao processar coluna {col}: {str(e)}")
-            continue
-    
-    st.write(f"✅ **Features numéricas válidas ({len(numeric_features)}):** {numeric_features[:10]}{'...' if len(numeric_features) > 10 else ''}")
-    
-    if len(numeric_features) == 0:
-        st.error("❌ Nenhuma feature numérica válida encontrada!")
-        return None, None, []
-    
-    # Usar apenas features numéricas válidas
-    X_clean = X_clean[numeric_features]
-    
-    # Garantir que y é numérico
-    y_clean = pd.to_numeric(y, errors='coerce')
-    if y_clean.isnull().sum() > 0:
-        mode_val = y_clean.mode()
-        if len(mode_val) > 0:
-            y_clean = y_clean.fillna(mode_val[0])
-        else:
-            y_clean = y_clean.fillna(0)
+                X_clean[col] = X_clean[col].fillna(X_clean[col].median())
     
     # Remover linhas com problemas
     mask = ~(X_clean.isnull().any(axis=1) | y_clean.isnull())
     X_clean = X_clean[mask]
     y_clean = y_clean[mask]
-    
-    st.write(f"📊 **Após limpeza:**")
-    st.write(f"- X shape: {X_clean.shape}")
-    st.write(f"- y shape: {y_clean.shape}")
-    st.write(f"- Classes em y: {y_clean.value_counts().to_dict()}")
-    
-    # Verificar se temos dados suficientes
-    if len(X_clean) < 10:
-        st.error("❌ Dados insuficientes após limpeza!")
-        return None, None, []
-    
-    # Verificar se temos pelo menos 2 classes
-    if len(y_clean.unique()) < 2:
-        st.error("❌ Apenas uma classe encontrada na variável target!")
-        return None, None, []
     
     # Verificar se temos dados suficientes para SMOTE
     min_samples = y_clean.value_counts().min()
@@ -315,80 +235,32 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=Tru
             k_neighbors = min(5, min_samples - 1)
             smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
             X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
-            st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_balanced)} amostras")
         except Exception as e:
-            st.warning(f"⚠️ Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
+            st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
             X_balanced, y_balanced = X_clean, y_clean
     else:
         # Se não der para aplicar SMOTE, usar dados originais
         X_balanced, y_balanced = X_clean, y_clean
-        if apply_smote:
-            st.warning("⚠️ SMOTE não aplicado: dados insuficientes.")
     
     # RFE
-    selected_features = X_balanced.columns.tolist()
-    X_selected = X_balanced
-    
-    if len(X_balanced.columns) > n_features:
-        try:
-            n_features = min(n_features, X_balanced.shape[1])
-            estimator = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
-            rfe = RFE(estimator=estimator, n_features_to_select=n_features)
-            rfe.fit(X_balanced, y_balanced)
-            
-            selected_features = X_balanced.columns[rfe.support_].tolist()
-            X_selected = X_balanced[selected_features]
-            st.success(f"✅ RFE aplicado! {len(selected_features)} features selecionadas")
-            
-        except Exception as e:
-            st.warning(f"⚠️ Erro ao aplicar RFE: {str(e)}. Usando todas as features.")
-            selected_features = X_balanced.columns.tolist()
-            X_selected = X_balanced
-    
-    # Verificação final
-    if X_selected is None or len(X_selected) == 0 or len(selected_features) == 0:
-        st.error("❌ Erro no processamento final dos dados!")
-        return None, None, []
-    
-    st.write(f"🎯 **Resultado final:**")
-    st.write(f"- Features selecionadas: {len(selected_features)}")
-    st.write(f"- Amostras finais: {len(X_selected)}")
+    try:
+        n_features = min(n_features, X_balanced.shape[1])
+        estimator = LogisticRegression(random_state=42, max_iter=1000)
+        rfe = RFE(estimator=estimator, n_features_to_select=n_features)
+        rfe.fit(X_balanced, y_balanced)
+        
+        selected_features = X_balanced.columns[rfe.support_].tolist()
+        X_selected = X_balanced[selected_features]
+        
+    except Exception as e:
+        st.warning(f"Erro ao aplicar RFE: {str(e)}. Usando todas as features.")
+        selected_features = X_balanced.columns.tolist()
+        X_selected = X_balanced
     
     return X_selected, y_balanced, selected_features
 
 def train_models(X_train, X_test, y_train, y_test, selected_models):
     """Treina os modelos selecionados"""
-    
-    # Verificações de segurança
-    if X_train is None or X_test is None or len(X_train) == 0 or len(X_test) == 0:
-        st.error("❌ Dados de treino/teste inválidos!")
-        return {}
-    
-    if X_train.shape[1] == 0:
-        st.error("❌ Nenhuma feature disponível para treinamento!")
-        return {}
-    
-    # Garantir que todos os dados são numéricos
-    X_train_clean = X_train.copy()
-    X_test_clean = X_test.copy()
-    
-    # Converter para numérico e tratar problemas
-    for col in X_train_clean.columns:
-        # Substituir infinitos e NaN
-        X_train_clean[col] = pd.to_numeric(X_train_clean[col], errors='coerce')
-        X_test_clean[col] = pd.to_numeric(X_test_clean[col], errors='coerce')
-        
-        X_train_clean[col] = X_train_clean[col].replace([np.inf, -np.inf], np.nan)
-        X_test_clean[col] = X_test_clean[col].replace([np.inf, -np.inf], np.nan)
-        
-        # Preencher NaN com mediana
-        if X_train_clean[col].isnull().sum() > 0:
-            median_val = X_train_clean[col].median()
-            if pd.isna(median_val):
-                median_val = 0
-            X_train_clean[col] = X_train_clean[col].fillna(median_val)
-            X_test_clean[col] = X_test_clean[col].fillna(median_val)
-    
     models = {
         'KNN': KNeighborsClassifier(n_neighbors=5),
         'SVM': SVC(probability=True, random_state=42),
@@ -402,52 +274,36 @@ def train_models(X_train, X_test, y_train, y_test, selected_models):
     
     results = {}
     
-    # Padronizar dados para KNN e SVM (com verificação)
-    X_train_scaled = None
-    X_test_scaled = None
-    
-    try:
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train_clean)
-        X_test_scaled = scaler.transform(X_test_clean)
-    except Exception as e:
-        st.warning(f"⚠️ Erro na padronização: {str(e)}. Modelos KNN e SVM serão ignorados.")
+    # Padronizar dados para KNN e SVM
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
+    X_test_scaled = scaler.transform(X_test)
     
     for model_name in selected_models:
         if model_name in models:
-            try:
-                model = models[model_name]
-                
-                # Usar dados padronizados para KNN e SVM (se disponível)
-                if model_name in ['KNN', 'SVM'] and X_train_scaled is not None:
-                    model.fit(X_train_scaled, y_train)
-                    y_pred = model.predict(X_test_scaled)
-                    y_proba = model.predict_proba(X_test_scaled)[:, 1]
-                elif model_name in ['KNN', 'SVM'] and X_train_scaled is None:
-                    st.warning(f"⚠️ Pulando {model_name} devido a erro na padronização.")
-                    continue
-                else:
-                    model.fit(X_train_clean, y_train)
-                    y_pred = model.predict(X_test_clean)
-                    y_proba = model.predict_proba(X_test_clean)[:, 1]
-                
-                # Calcular métricas
-                results[model_name] = {
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'recall': recall_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'f1_score': f1_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'auc': roc_auc_score(y_test, y_proba),
-                    'y_pred': y_pred,
-                    'y_proba': y_proba,
-                    'model': model
-                }
-                
-                st.success(f"✅ {model_name} treinado com sucesso!")
-                
-            except Exception as e:
-                st.error(f"❌ Erro ao treinar {model_name}: {str(e)}")
-                continue
+            model = models[model_name]
+            
+            # Usar dados padronizados para KNN e SVM
+            if model_name in ['KNN', 'SVM']:
+                model.fit(X_train_scaled, y_train)
+                y_pred = model.predict(X_test_scaled)
+                y_proba = model.predict_proba(X_test_scaled)[:, 1]
+            else:
+                model.fit(X_train, y_train)
+                y_pred = model.predict(X_test)
+                y_proba = model.predict_proba(X_test)[:, 1]
+            
+            # Calcular métricas
+            results[model_name] = {
+                'accuracy': accuracy_score(y_test, y_pred),
+                'precision': precision_score(y_test, y_pred, average='weighted'),
+                'recall': recall_score(y_test, y_pred, average='weighted'),
+                'f1_score': f1_score(y_test, y_pred, average='weighted'),
+                'auc': roc_auc_score(y_test, y_proba),
+                'y_pred': y_pred,
+                'y_proba': y_proba,
+                'model': model
+            }
     
     return results
 
@@ -582,42 +438,26 @@ with tab2:
         with st.spinner("Processando dados..."):
             if apply_smote:
                 X_processed, y_processed, selected_features = apply_smote_and_rfe(df_processed, target_var, n_features, True)
+                st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
             else:
                 X_processed, y_processed, selected_features = apply_smote_and_rfe(df_processed, target_var, n_features, False)
-            
-            # Verificar se o processamento foi bem-sucedido
-            if X_processed is None or y_processed is None or len(selected_features) == 0:
-                st.error("❌ Erro no pré-processamento dos dados. Verifique os dados de entrada.")
-                st.stop()
-            
-            if len(X_processed) == 0:
-                st.error("❌ Nenhum dado válido após processamento.")
-                st.stop()
-            
-            st.success(f"✅ Dados processados: {len(X_processed)} amostras, {len(selected_features)} features")
+                st.info("ℹ️ SMOTE não aplicado - usando dados originais")
         
         # Dividir dados com tratamento de erro
         try:
             # Verificar se temos classes suficientes para estratificação
-            if pd.Series(y_processed).value_counts().min() >= 2:
+            if y_processed.value_counts().min() >= 2:
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_processed, y_processed, test_size=test_size, random_state=42, stratify=y_processed
                 )
-                st.info("✅ Divisão estratificada aplicada com sucesso")
             else:
                 # Se não temos amostras suficientes para estratificação, usar divisão aleatória
                 X_train, X_test, y_train, y_test = train_test_split(
                     X_processed, y_processed, test_size=test_size, random_state=42
                 )
                 st.warning("⚠️ Divisão aleatória usada (dados insuficientes para estratificação)")
-                
-            # Verificar se a divisão foi bem-sucedida
-            if len(X_train) == 0 or len(X_test) == 0:
-                st.error("❌ Erro na divisão dos dados: conjuntos vazios.")
-                st.stop()
-                
         except Exception as e:
-            st.error(f"❌ Erro na divisão dos dados: {str(e)}")
+            st.error(f"Erro na divisão dos dados: {str(e)}")
             st.stop()
         
         # Mostrar features selecionadas
@@ -633,13 +473,6 @@ with tab2:
         
         # Treinar modelos
         with st.spinner("Treinando modelos..."):
-            
-            # Verificação final antes do treinamento
-            st.write(f"📊 **Dados para treinamento:**")
-            st.write(f"- Treino: {X_train.shape[0]} amostras, {X_train.shape[1]} features")
-            st.write(f"- Teste: {X_test.shape[0]} amostras, {X_test.shape[1]} features")
-            st.write(f"- Classes no treino: {pd.Series(y_train).value_counts().to_dict()}")
-            
             results = train_models(X_train, X_test, y_train, y_test, selected_models)
         
         # Salvar resultados no session state

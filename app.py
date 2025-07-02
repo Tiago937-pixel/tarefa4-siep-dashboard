@@ -207,6 +207,12 @@ def load_and_process_data():
 def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=True):
     """Aplica SMOTE e RFE aos dados"""
     
+    # Debug: mostrar informações dos dados de entrada
+    st.write("🔍 **Debug - Dados de entrada:**")
+    st.write(f"- Shape do dataset: {df_processed.shape}")
+    st.write(f"- Colunas disponíveis: {list(df_processed.columns)}")
+    st.write(f"- Target variable: {target_var}")
+    
     # Verificações iniciais
     if df_processed is None or len(df_processed) == 0:
         st.error("❌ Dataset vazio!")
@@ -214,43 +220,81 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=Tru
     
     if target_var not in df_processed.columns:
         st.error(f"❌ Variável target '{target_var}' não encontrada!")
+        st.write(f"Colunas disponíveis: {list(df_processed.columns)}")
         return None, None, []
     
-    X = df_processed.drop(columns=[target_var])
-    y = df_processed[target_var]
+    # Separar features e target
+    all_columns = df_processed.columns.tolist()
+    feature_columns = [col for col in all_columns if col != target_var]
     
-    # Garantir que temos pelo menos algumas features
-    if X.shape[1] == 0:
-        st.error("❌ Nenhuma feature disponível!")
+    st.write(f"🎯 **Features identificadas ({len(feature_columns)}):** {feature_columns[:10]}{'...' if len(feature_columns) > 10 else ''}")
+    
+    if len(feature_columns) == 0:
+        st.error("❌ Nenhuma feature disponível após remover target!")
         return None, None, []
     
-    # Garantir que todos os dados são numéricos e limpos
-    X_clean = X.copy()
-    y_clean = y.copy()
+    X = df_processed[feature_columns].copy()
+    y = df_processed[target_var].copy()
+    
+    st.write(f"📊 **Dados extraídos:**")
+    st.write(f"- X shape: {X.shape}")
+    st.write(f"- y shape: {y.shape}")
+    st.write(f"- Tipos de dados em X: {X.dtypes.value_counts().to_dict()}")
     
     # Limpar e converter dados
+    X_clean = X.copy()
+    numeric_features = []
+    
     for col in X_clean.columns:
-        # Converter para numérico
-        X_clean[col] = pd.to_numeric(X_clean[col], errors='coerce')
-        
-        # Substituir inf por NaN, depois por mediana
-        X_clean[col] = X_clean[col].replace([np.inf, -np.inf], np.nan)
-        
-        if X_clean[col].isnull().sum() > 0:
-            median_val = X_clean[col].median()
-            if pd.isna(median_val):
-                median_val = 0
-            X_clean[col] = X_clean[col].fillna(median_val)
+        try:
+            # Tentar converter para numérico
+            X_clean[col] = pd.to_numeric(X_clean[col], errors='coerce')
+            
+            # Substituir inf por NaN
+            X_clean[col] = X_clean[col].replace([np.inf, -np.inf], np.nan)
+            
+            # Preencher NaN com mediana
+            if X_clean[col].isnull().sum() > 0:
+                median_val = X_clean[col].median()
+                if pd.isna(median_val):
+                    median_val = 0
+                X_clean[col] = X_clean[col].fillna(median_val)
+            
+            # Se a coluna tem variância, manter
+            if X_clean[col].std() > 0:
+                numeric_features.append(col)
+                
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao processar coluna {col}: {str(e)}")
+            continue
+    
+    st.write(f"✅ **Features numéricas válidas ({len(numeric_features)}):** {numeric_features[:10]}{'...' if len(numeric_features) > 10 else ''}")
+    
+    if len(numeric_features) == 0:
+        st.error("❌ Nenhuma feature numérica válida encontrada!")
+        return None, None, []
+    
+    # Usar apenas features numéricas válidas
+    X_clean = X_clean[numeric_features]
     
     # Garantir que y é numérico
-    y_clean = pd.to_numeric(y_clean, errors='coerce')
+    y_clean = pd.to_numeric(y, errors='coerce')
     if y_clean.isnull().sum() > 0:
-        y_clean = y_clean.fillna(0)
+        mode_val = y_clean.mode()
+        if len(mode_val) > 0:
+            y_clean = y_clean.fillna(mode_val[0])
+        else:
+            y_clean = y_clean.fillna(0)
     
     # Remover linhas com problemas
     mask = ~(X_clean.isnull().any(axis=1) | y_clean.isnull())
     X_clean = X_clean[mask]
     y_clean = y_clean[mask]
+    
+    st.write(f"📊 **Após limpeza:**")
+    st.write(f"- X shape: {X_clean.shape}")
+    st.write(f"- y shape: {y_clean.shape}")
+    st.write(f"- Classes em y: {y_clean.value_counts().to_dict()}")
     
     # Verificar se temos dados suficientes
     if len(X_clean) < 10:
@@ -288,7 +332,7 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=Tru
     if len(X_balanced.columns) > n_features:
         try:
             n_features = min(n_features, X_balanced.shape[1])
-            estimator = LogisticRegression(random_state=42, max_iter=1000)
+            estimator = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
             rfe = RFE(estimator=estimator, n_features_to_select=n_features)
             rfe.fit(X_balanced, y_balanced)
             
@@ -305,6 +349,10 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=Tru
     if X_selected is None or len(X_selected) == 0 or len(selected_features) == 0:
         st.error("❌ Erro no processamento final dos dados!")
         return None, None, []
+    
+    st.write(f"🎯 **Resultado final:**")
+    st.write(f"- Features selecionadas: {len(selected_features)}")
+    st.write(f"- Amostras finais: {len(X_selected)}")
     
     return X_selected, y_balanced, selected_features
 

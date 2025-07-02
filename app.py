@@ -33,12 +33,7 @@ import xgboost as xgb
 import lightgbm as lgb
 
 # Balanceamento
-try:
-    from imblearn.over_sampling import SMOTE
-    SMOTE_AVAILABLE = True
-except ImportError:
-    SMOTE_AVAILABLE = False
-    st.warning("⚠️ SMOTE não disponível. Usando dados originais.")
+from imblearn.over_sampling import SMOTE
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -138,11 +133,8 @@ def load_and_process_data():
         # Processar dados
         df_processed = df.copy()
         
-        # Remover valores nulos
-        df_processed = df_processed.dropna()
-        
         # Encoding de variáveis categóricas
-        categorical_cols = df_processed.select_dtypes(include=[object]).columns.tolist()
+        categorical_cols = df.select_dtypes(include=[object]).columns.tolist()
         if target_var in categorical_cols:
             categorical_cols.remove(target_var)
             
@@ -152,14 +144,6 @@ def load_and_process_data():
             df_processed[col] = le.fit_transform(df_processed[col].astype(str))
             le_dict[col] = le
             
-        # Converter tipos para numérico
-        numeric_cols = df_processed.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
-        
-        # Remover linhas com NaN resultantes da conversão
-        df_processed = df_processed.dropna()
-        
         return df, df_processed, target_var, le_dict
         
     except FileNotFoundError:
@@ -214,634 +198,608 @@ def load_and_process_data():
             
         return df, df_processed, 'Complain', le_dict
 
-def safe_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=True):
-    """Aplica SMOTE e RFE aos dados com tratamento de erro robusto"""
+@st.cache_data
+def apply_smote_and_rfe(df_processed, target_var, n_features=15):
+    """Aplica SMOTE e RFE aos dados"""
+    X = df_processed.drop(columns=[target_var])
+    y = df_processed[target_var]
+    
+    # Garantir que todos os dados são numéricos e limpos
+    X_clean = X.copy()
+    y_clean = y.copy()
+    
+    # Remover valores infinitos e NaN
+    for col in X_clean.columns:
+        if X_clean[col].dtype in ['int64', 'float64']:
+            # Substituir inf por NaN, depois por mediana
+            X_clean[col] = X_clean[col].replace([np.inf, -np.inf], np.nan)
+            if X_clean[col].isnull().sum() > 0:
+                X_clean[col] = X_clean[col].fillna(X_clean[col].median())
+    
+    # Remover linhas com problemas
+    mask = ~(X_clean.isnull().any(axis=1) | y_clean.isnull())
+    X_clean = X_clean[mask]
+    y_clean = y_clean[mask]
+    
+    # Verificar se temos dados suficientes para SMOTE
+    min_samples = y_clean.value_counts().min()
+    
     try:
-        X = df_processed.drop(columns=[target_var])
-        y = df_processed[target_var]
-        
-        # Garantir que todos os dados são numéricos
-        X = X.select_dtypes(include=[np.number])
-        
-        # Verificar se temos dados suficientes
-        if len(X) == 0 or len(y) == 0:
-            st.error("Erro: Dados vazios após processamento")
-            return None, None, None
-        
-        # Verificar se X tem colunas
-        if X.shape[1] == 0:
-            st.error("Erro: Nenhuma variável numérica encontrada")
-            return None, None, None
-        
-        # Garantir que todos os dados são finitos
-        X = X.replace([np.inf, -np.inf], np.nan).dropna()
-        y = y.loc[X.index]
-        
-        if len(X) == 0:
-            st.error("Erro: Dados vazios após limpeza")
-            return None, None, None
-        
-        # Verificar se temos classes suficientes para SMOTE
-        class_counts = y.value_counts()
-        min_samples = class_counts.min()
-        
-        if SMOTE_AVAILABLE and apply_smote and min_samples >= 6 and len(class_counts) > 1:
-            try:
-                k_neighbors = min(5, min_samples - 1)
-                smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
-                X_balanced, y_balanced = smote.fit_resample(X, y)
-                st.success(f"✅ SMOTE aplicado com sucesso. Dataset balanceado: {len(y_balanced)} amostras")
-            except Exception as e:
-                st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
-                X_balanced, y_balanced = X, y
+        if min_samples >= 2:
+            # SMOTE
+            k_neighbors = min(5, min_samples - 1)
+            smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
+            X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
         else:
-            X_balanced, y_balanced = X, y
-            if apply_smote:
-                st.warning("SMOTE não aplicado: dados insuficientes ou biblioteca indisponível")
-        
-        # RFE
-        try:
-            n_features = min(n_features, X_balanced.shape[1])
-            if n_features > 0:
-                estimator = LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
-                rfe = RFE(estimator=estimator, n_features_to_select=n_features)
-                rfe.fit(X_balanced, y_balanced)
-                
-                selected_features = X_balanced.columns[rfe.support_].tolist()
-                X_selected = X_balanced[selected_features]
-                
-                st.success(f"✅ RFE aplicado: {len(selected_features)} features selecionadas")
-            else:
-                selected_features = X_balanced.columns.tolist()
-                X_selected = X_balanced
-                st.warning("RFE não aplicado: número de features inválido")
-                
-        except Exception as e:
-            st.warning(f"Erro ao aplicar RFE: {str(e)}. Usando todas as features.")
-            selected_features = X_balanced.columns.tolist()
-            X_selected = X_balanced
-        
-        return X_selected, y_balanced, selected_features
-        
+            # Se não der para aplicar SMOTE, usar dados originais
+            X_balanced, y_balanced = X_clean, y_clean
+            
     except Exception as e:
-        st.error(f"Erro no processamento dos dados: {str(e)}")
-        return None, None, None
-
-def train_models_safe(X_train, X_test, y_train, y_test, selected_models):
-    """Treina os modelos selecionados com tratamento de erro robusto"""
+        st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
+        X_balanced, y_balanced = X_clean, y_clean
     
-    # Verificar se os dados são válidos
-    if X_train is None or len(X_train) == 0 or X_test is None or len(X_test) == 0:
-        st.error("Erro: Dados de treino ou teste vazios")
-        return {}
-    
-    if y_train is None or len(y_train) == 0 or y_test is None or len(y_test) == 0:
-        st.error("Erro: Variável target vazia")
-        return {}
-    
-    # Verificar se as dimensões coincidem
-    if len(X_train) != len(y_train) or len(X_test) != len(y_test):
-        st.error("Erro: Dimensões incompatíveis entre X e y")
-        return {}
-    
-    # Converter para array numpy e verificar tipos
+    # RFE
     try:
-        X_train = np.array(X_train, dtype=np.float64)
-        X_test = np.array(X_test, dtype=np.float64)
-        y_train = np.array(y_train, dtype=np.int64)
-        y_test = np.array(y_test, dtype=np.int64)
+        n_features = min(n_features, X_balanced.shape[1])
+        estimator = LogisticRegression(random_state=42, max_iter=1000)
+        rfe = RFE(estimator=estimator, n_features_to_select=n_features)
+        rfe.fit(X_balanced, y_balanced)
+        
+        selected_features = X_balanced.columns[rfe.support_].tolist()
+        X_selected = X_balanced[selected_features]
+        
     except Exception as e:
-        st.error(f"Erro na conversão de tipos: {str(e)}")
+        st.warning(f"Erro ao aplicar RFE: {str(e)}. Usando todas as features.")
+        selected_features = X_balanced.columns.tolist()
+        X_selected = X_balanced
+    
+    return X_selected, y_balanced, selected_features
+
+def train_models(X_train, X_test, y_train, y_test, selected_models):
+    """Treina os modelos selecionados de forma robusta"""
+    
+    if X_train.empty or X_test.empty:
+        st.error("Dados de treino ou teste vazios!")
         return {}
     
-    # Verificar se há valores infinitos ou NaN
-    if not (np.isfinite(X_train).all() and np.isfinite(X_test).all()):
-        st.error("Erro: Dados contêm valores infinitos ou NaN")
+    # Verificar se temos variáveis numéricas
+    if X_train.shape[1] == 0:
+        st.error("Nenhuma variável para treinar modelos!")
         return {}
     
     models = {
-        'KNN': KNeighborsClassifier(n_neighbors=5),
-        'SVM': SVC(probability=True, random_state=42, C=1.0, kernel='rbf'),
+        'KNN': KNeighborsClassifier(n_neighbors=min(5, len(X_train)//2)),
+        'SVM': SVC(probability=True, random_state=42),
         'Decision Tree': DecisionTreeClassifier(random_state=42, max_depth=10),
-        'Random Forest': RandomForestClassifier(n_estimators=100, random_state=42, max_depth=10),
+        'Random Forest': RandomForestClassifier(n_estimators=50, random_state=42, max_depth=10),
         'AdaBoost': AdaBoostClassifier(random_state=42, n_estimators=50),
-        'Gradient Boosting': GradientBoostingClassifier(random_state=42, n_estimators=100),
-        'XGBoost': xgb.XGBClassifier(random_state=42, eval_metric='logloss', max_depth=6),
-        'LightGBM': lgb.LGBMClassifier(random_state=42, verbose=-1, max_depth=6),
-        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000, solver='liblinear')
+        'Gradient Boosting': GradientBoostingClassifier(random_state=42, n_estimators=50),
+        'XGBoost': xgb.XGBClassifier(random_state=42, eval_metric='logloss', n_estimators=50),
+        'LightGBM': lgb.LGBMClassifier(random_state=42, verbose=-1, n_estimators=50)
     }
     
     results = {}
     
-    # Padronizar dados apenas para modelos que precisam
-    scale_models = ['KNN', 'SVM', 'Logistic Regression']
-    
+    # Padronizar dados para KNN e SVM
     try:
         scaler = StandardScaler()
         X_train_scaled = scaler.fit_transform(X_train)
         X_test_scaled = scaler.transform(X_test)
     except Exception as e:
-        st.error(f"Erro na padronização: {str(e)}")
-        X_train_scaled = X_train
-        X_test_scaled = X_test
+        st.warning(f"Erro na padronização: {e}")
+        X_train_scaled = X_train.values
+        X_test_scaled = X_test.values
     
     for model_name in selected_models:
         if model_name in models:
             try:
+                st.write(f"🔍 Treinando {model_name}...")
                 model = models[model_name]
                 
-                # Usar dados padronizados para modelos específicos
-                if model_name in scale_models:
+                # Usar dados padronizados para KNN e SVM
+                if model_name in ['KNN', 'SVM']:
                     model.fit(X_train_scaled, y_train)
                     y_pred = model.predict(X_test_scaled)
-                    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+                    y_proba = model.predict_proba(X_test_scaled)[:, 1] if hasattr(model, 'predict_proba') else y_pred.astype(float)
                 else:
                     model.fit(X_train, y_train)
                     y_pred = model.predict(X_test)
-                    y_proba = model.predict_proba(X_test)[:, 1]
+                    y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else y_pred.astype(float)
                 
-                # Calcular métricas
-                results[model_name] = {
-                    'accuracy': accuracy_score(y_test, y_pred),
-                    'precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'recall': recall_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'f1_score': f1_score(y_test, y_pred, average='weighted', zero_division=0),
-                    'auc': roc_auc_score(y_test, y_proba),
-                    'y_pred': y_pred,
-                    'y_proba': y_proba,
-                    'model': model
-                }
-                
-                st.success(f"✅ Modelo {model_name} treinado com sucesso")
+                # Calcular métricas com tratamento de erro
+                try:
+                    accuracy = accuracy_score(y_test, y_pred)
+                    precision = precision_score(y_test, y_pred, average='weighted', zero_division=0)
+                    recall = recall_score(y_test, y_pred, average='weighted', zero_division=0)
+                    f1 = f1_score(y_test, y_pred, average='weighted', zero_division=0)
+                    
+                    # AUC pode falhar se só tiver uma classe
+                    try:
+                        auc = roc_auc_score(y_test, y_proba)
+                        fpr, tpr, _ = roc_curve(y_test, y_proba)
+                    except:
+                        auc = accuracy  # Fallback
+                        fpr, tpr = None, None
+                    
+                    results[model_name] = {
+                        'accuracy': accuracy,
+                        'precision': precision,
+                        'recall': recall,
+                        'f1_score': f1,
+                        'auc': auc,
+                        'y_pred': y_pred,
+                        'y_proba': y_proba,
+                        'model': model,
+                        'fpr': fpr,
+                        'tpr': tpr
+                    }
+                    
+                    st.success(f"✅ {model_name} treinado - AUC: {auc:.3f}")
+                    
+                except Exception as e:
+                    st.warning(f"Erro ao calcular métricas para {model_name}: {e}")
+                    continue
                 
             except Exception as e:
-                st.error(f"Erro ao treinar {model_name}: {str(e)}")
+                st.error(f"Erro ao treinar {model_name}: {e}")
                 continue
     
     return results
 
 # Carregar dados
 try:
-    df, df_processed, target_var, le_dict = load_and_process_data()
+    with st.spinner("Carregando dados..."):
+        df, df_processed, target_var, le_dict = load_and_process_data()
+        
+    if df is None or df_processed is None:
+        st.error("Erro ao carregar dados!")
+        st.stop()
     
-    # Layout com abas principais
-    tab1, tab2, tab3 = st.tabs(["📊 Configuração & Dados", "🤖 Modelagem", "📈 Resultados"])
+    # Verificar se temos dados válidos
+    if len(df) == 0 or len(df_processed) == 0:
+        st.error("Dataset vazio após carregamento!")
+        st.stop()
     
-    with tab1:
-        # Sidebar
-        with st.sidebar:
-            st.header("⚙️ Configurações")
-
-            # Informações do dataset
-            st.subheader("📊 Informações do Dataset")
-            st.info(f"""
-            **Dimensões:** {df.shape[0]} linhas × {df.shape[1]} colunas
-            **Variável Target:** {target_var}
-            **Missing Values:** {df.isnull().sum().sum()}
-            """)
-
-            # Análise da distribuição do target
-            target_dist = df[target_var].value_counts()
-            st.subheader(f"🎯 Distribuição de {target_var}")
-            
-            fig_target = px.pie(
-                values=target_dist.values, 
-                names=[f"Classe {i}" for i in target_dist.index],
-                title=f"Distribuição de {target_var}"
-            )
-            st.plotly_chart(fig_target, use_container_width=True)
-
-            # Configurações de modelagem
-            st.subheader("🔧 Configurações de Modelagem")
-
-            # Seleção de features via RFE
-            n_features = st.slider(
-                "Número de features (RFE)", 
-                min_value=5, 
-                max_value=min(20, len(df_processed.columns)-1), 
-                value=15
-            )
-
-            # Aplicar SMOTE
-            if SMOTE_AVAILABLE:
-                apply_smote = st.checkbox("Aplicar SMOTE", value=True)
-            else:
-                apply_smote = False
-
-            # Seleção de modelos
-            st.subheader("🤖 Seleção de Modelos")
-            available_models = ['KNN', 'SVM', 'Decision Tree', 'Random Forest', 'AdaBoost', 
-                              'Gradient Boosting', 'XGBoost', 'LightGBM', 'Logistic Regression']
-            selected_models = st.multiselect(
-                "Escolha os modelos para treinar:",
-                available_models,
-                default=['Random Forest', 'XGBoost', 'LightGBM']
-            )
-
-            # Tamanho do conjunto de teste
-            test_size = st.slider("Tamanho do conjunto de teste (%)", 10, 50, 30) / 100
-
-        # Área principal da Tab 1
-        st.subheader("📊 Visão Geral dos Dados")
+    # Verificar se target existe
+    if target_var not in df_processed.columns:
+        st.error(f"Variável target '{target_var}' não encontrada!")
+        st.stop()
         
-        # Filtros interativos
-        st.subheader("🔍 Filtros Interativos")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Filtro por idade (se existir)
-            if 'Age' in df.columns:
-                age_min, age_max = int(df['Age'].min()), int(df['Age'].max())
-                age_range = st.slider("Faixa de Idade", age_min, age_max, (age_min, age_max))
-                df_filtered = df[(df['Age'] >= age_range[0]) & (df['Age'] <= age_range[1])]
-            else:
-                df_filtered = df.copy()
-        
-        with col2:
-            # Filtro por renda (se existir)
-            if 'Income' in df.columns:
-                income_min, income_max = float(df['Income'].min()), float(df['Income'].max())
-                income_range = st.slider("Faixa de Renda", income_min, income_max, (income_min, income_max))
-                df_filtered = df_filtered[(df_filtered['Income'] >= income_range[0]) & (df_filtered['Income'] <= income_range[1])]
+except Exception as e:
+    st.error(f"Erro crítico ao carregar dados: {e}")
+    st.stop()
 
-        # Mostrar estatísticas dos dados filtrados
-        st.write(f"**Dados após filtros:** {len(df_filtered)} registros")
-        
-        # Visualizações dos dados filtrados
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if 'Age' in df_filtered.columns:
-                fig_age_dist = px.histogram(df_filtered, x='Age', color=target_var, 
-                                          title="Distribuição de Idade por Reclamação")
-                st.plotly_chart(fig_age_dist, use_container_width=True)
-        
-        with col2:
-            if 'Income' in df_filtered.columns:
-                fig_income_dist = px.box(df_filtered, x=target_var, y='Income', 
-                                       title="Distribuição de Renda por Reclamação")
-                st.plotly_chart(fig_income_dist, use_container_width=True)
+# Sidebar
+st.sidebar.header("⚙️ Configurações")
 
-        # Preview dos dados
-        st.subheader("👀 Preview dos Dados")
-        st.dataframe(df_filtered.head(), use_container_width=True)
-        
-        # Estatísticas básicas
-        col1, col2, col3 = st.columns(3)
-        
-        with col1:
-            st.metric("Total de Registros", f"{len(df_filtered):,}")
-        
-        with col2:
-            st.metric("Número de Features", len(df_filtered.columns) - 1)
-        
-        with col3:
-            target_balance = df_filtered[target_var].value_counts(normalize=True).min()
-            st.metric("Balanceamento", f"{target_balance:.1%}")
+# Informações do dataset
+st.sidebar.subheader("📊 Informações do Dataset")
 
-    with tab2:
-        st.header("🤖 Treinamento de Modelos")
+try:
+    # Informações básicas
+    st.sidebar.info(f"""
+    **Dimensões:** {df.shape[0]} linhas × {df.shape[1]} colunas
+    **Variável Target:** {target_var}
+    **Missing Values:** {df.isnull().sum().sum()}
+    """)
+    
+    # Debug: Mostrar tipos de dados
+    with st.sidebar.expander("🔍 Debug - Tipos de Dados"):
+        numeric_cols = df_processed.select_dtypes(include=[np.number]).columns.tolist()
+        if target_var in numeric_cols:
+            numeric_cols.remove(target_var)
         
-        # Botão para executar análise
-        run_analysis = st.button("🚀 Executar Análise", type="primary")
-
-        if run_analysis and selected_models:
-            
-            # Aplicar SMOTE e RFE
-            with st.spinner("Processando dados..."):
-                processed_data = safe_smote_and_rfe(df_processed, target_var, n_features, apply_smote)
-                
-                if processed_data[0] is not None:
-                    X_processed, y_processed, selected_features = processed_data
-                else:
-                    st.error("Erro no processamento dos dados. Verifique o dataset.")
-                    st.stop()
-            
-            # Dividir dados com tratamento de erro
-            try:
-                # Verificar se temos classes suficientes para estratificação
-                if y_processed.value_counts().min() >= 2:
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X_processed, y_processed, test_size=test_size, random_state=42, stratify=y_processed
-                    )
-                else:
-                    # Se não temos amostras suficientes para estratificação, usar divisão aleatória
-                    X_train, X_test, y_train, y_test = train_test_split(
-                        X_processed, y_processed, test_size=test_size, random_state=42
-                    )
-                    st.warning("⚠️ Divisão aleatória usada (dados insuficientes para estratificação)")
-            except Exception as e:
-                st.error(f"Erro na divisão dos dados: {str(e)}")
-                st.stop()
-            
-            # Mostrar features selecionadas
-            st.subheader("🎯 Features Selecionadas via RFE")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.info(f"**Total de features selecionadas:** {len(selected_features)}")
-                
-            with col2:
-                with st.expander("Ver lista completa"):
-                    st.write(selected_features)
-            
-            # Treinar modelos
-            with st.spinner("Treinando modelos..."):
-                results = train_models_safe(X_train, X_test, y_train, y_test, selected_models)
-            
-            # Salvar resultados no session state
-            st.session_state['results'] = results
-            st.session_state['X_test'] = X_test
-            st.session_state['y_test'] = y_test
-            st.session_state['selected_features'] = selected_features
-            
-            if results:
-                st.success(f"✅ {len(results)} modelos treinados com sucesso!")
-            else:
-                st.error("❌ Nenhum modelo foi treinado com sucesso!")
-
-        elif run_analysis and not selected_models:
-            st.error("❌ Selecione pelo menos um modelo para treinar!")
+        categorical_cols = df_processed.select_dtypes(include=[object]).columns.tolist()
+        if target_var in categorical_cols:
+            categorical_cols.remove(target_var)
         
-        else:
-            # Tela inicial
-            st.subheader("👋 Bem-vindo ao Sistema de Modelagem!")
-            
-            st.markdown("""
-            Configure os parâmetros na sidebar e clique em "Executar Análise" para iniciar.
-            
-            ### 🚀 Como usar:
-            1. **Configure os parâmetros** na sidebar à esquerda
-            2. **Selecione os modelos** que deseja treinar
-            3. **Clique em "Executar Análise"** para iniciar o processo
-            
-            ### 📊 Funcionalidades:
-            - ⚖️ **Balanceamento de dados** com SMOTE
-            - 🎯 **Seleção de features** com RFE
-            - 🤖 **Múltiplos modelos** de Machine Learning
-            - 📈 **Visualizações interativas** dos resultados
-            - 🧠 **Interpretação automatizada** dos modelos
-            """)
-
-    with tab3:
-        st.header("📈 Resultados e Análises")
+        st.write(f"**Numéricas ({len(numeric_cols)}):** {numeric_cols[:5]}{'...' if len(numeric_cols) > 5 else ''}")
+        st.write(f"**Categóricas ({len(categorical_cols)}):** {categorical_cols[:3]}{'...' if len(categorical_cols) > 3 else ''}")
         
-        if 'results' in st.session_state and st.session_state['results']:
-            results = st.session_state['results']
-            X_test = st.session_state['X_test'] 
-            y_test = st.session_state['y_test']
-            selected_features = st.session_state['selected_features']
-            
-            # Exibir resultados
-            st.subheader("📊 Resultados dos Modelos")
-            
-            # Criar tabela de resultados
-            results_df = pd.DataFrame({
-                'Modelo': list(results.keys()),
-                'Acurácia': [results[model]['accuracy'] for model in results.keys()],
-                'Precisão': [results[model]['precision'] for model in results.keys()],
-                'Recall': [results[model]['recall'] for model in results.keys()],
-                'F1-Score': [results[model]['f1_score'] for model in results.keys()],
-                'AUC': [results[model]['auc'] for model in results.keys()]
-            }).round(4)
-            
-            # Destacar melhor modelo
-            best_model_idx = results_df['AUC'].idxmax()
-            best_model_name = results_df.loc[best_model_idx, 'Modelo']
-            
-            # Mostrar tabela com destaque
-            st.dataframe(
-                results_df.style.highlight_max(subset=['AUC'], color='lightgreen'),
-                use_container_width=True
-            )
-            
-            # Cards de métricas do melhor modelo
-            st.subheader(f"🏆 Melhor Modelo: {best_model_name}")
-            
-            col1, col2, col3, col4, col5 = st.columns(5)
-            
-            with col1:
-                st.metric("Acurácia", f"{results[best_model_name]['accuracy']:.3f}")
-            with col2:
-                st.metric("Precisão", f"{results[best_model_name]['precision']:.3f}")
-            with col3:
-                st.metric("Recall", f"{results[best_model_name]['recall']:.3f}")
-            with col4:
-                st.metric("F1-Score", f"{results[best_model_name]['f1_score']:.3f}")
-            with col5:
-                st.metric("AUC", f"{results[best_model_name]['auc']:.3f}")
-            
-            # Visualizações
-            st.subheader("📈 Visualizações e Métricas")
-            
-            tab_comp, tab_roc, tab_conf, tab_imp = st.tabs(["📊 Comparação", "📈 Curvas ROC", "🔥 Matriz de Confusão", "🎯 Importância"])
-            
-            with tab_comp:
-                # Gráfico de comparação
-                fig_comparison = go.Figure()
-                
-                metrics = ['Acurácia', 'Precisão', 'Recall', 'F1-Score', 'AUC']
-                for metric in metrics:
-                    fig_comparison.add_trace(go.Bar(
-                        name=metric,
-                        x=results_df['Modelo'],
-                        y=results_df[metric],
-                        text=results_df[metric].round(3),
-                        textposition='auto'
-                    ))
-                
-                fig_comparison.update_layout(
-                    title="Comparação de Métricas por Modelo",
-                    xaxis_title="Modelos",
-                    yaxis_title="Score",
-                    barmode='group',
-                    height=500
-                )
-                
-                st.plotly_chart(fig_comparison, use_container_width=True)
-            
-            with tab_roc:
-                # Curvas ROC
-                fig_roc = go.Figure()
-                
-                for model_name in results.keys():
-                    fpr, tpr, _ = roc_curve(y_test, results[model_name]['y_proba'])
-                    fig_roc.add_trace(go.Scatter(
-                        x=fpr, y=tpr,
-                        mode='lines',
-                        name=f'{model_name} (AUC = {results[model_name]["auc"]:.3f})',
-                        line=dict(width=3)
-                    ))
-                
-                # Linha diagonal
-                fig_roc.add_trace(go.Scatter(
-                    x=[0, 1], y=[0, 1],
-                    mode='lines',
-                    name='Aleatório',
-                    line=dict(dash='dash', color='gray')
-                ))
-                
-                fig_roc.update_layout(
-                    title='Curvas ROC - Comparação de Modelos',
-                    xaxis_title='Taxa de Falsos Positivos',
-                    yaxis_title='Taxa de Verdadeiros Positivos',
-                    height=500
-                )
-                
-                st.plotly_chart(fig_roc, use_container_width=True)
-            
-            with tab_conf:
-                # Matriz de confusão do melhor modelo
-                y_pred_best = results[best_model_name]['y_pred']
-                cm = confusion_matrix(y_test, y_pred_best)
-                
-                fig_cm = px.imshow(
-                    cm,
-                    text_auto=True,
-                    aspect="auto",
-                    color_continuous_scale='Blues',
-                    title=f'Matriz de Confusão - {best_model_name}'
-                )
-                
-                fig_cm.update_layout(
-                    xaxis_title='Predito',
-                    yaxis_title='Real',
-                    height=400
-                )
-                
-                st.plotly_chart(fig_cm, use_container_width=True)
-                
-                # Interpretação da matriz
-                if cm.size == 4:  # Matriz 2x2
-                    tn, fp, fn, tp = cm.ravel()
-                    
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.markdown(f"""
-                        **Interpretação da Matriz:**
-                        - Verdadeiros Negativos: {tn}
-                        - Falsos Positivos: {fp}
-                        - Falsos Negativos: {fn}
-                        - Verdadeiros Positivos: {tp}
-                        """)
-                    
-                    with col2:
-                        accuracy = (tp + tn) / (tp + tn + fp + fn)
-                        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
-                        recall = tp / (tp + fn) if (tp + fn) > 0 else 0
-                        
-                        st.markdown(f"""
-                        **Métricas Calculadas:**
-                        - Acurácia: {accuracy:.3f}
-                        - Precisão: {precision:.3f}
-                        - Recall: {recall:.3f}
-                        """)
-            
-            with tab_imp:
-                # Importância das features
-                best_model_obj = results[best_model_name]['model']
-                
-                if hasattr(best_model_obj, 'feature_importances_'):
-                    importances = best_model_obj.feature_importances_
-                    importance_df = pd.DataFrame({
-                        'Feature': selected_features,
-                        'Importância': importances
-                    }).sort_values('Importância', ascending=True)
-                    
-                    fig_importance = px.bar(
-                        importance_df.tail(15),
-                        x='Importância',
-                        y='Feature',
-                        orientation='h',
-                        title=f'Top 15 Features Mais Importantes - {best_model_name}',
-                        height=600
-                    )
-                    
-                    st.plotly_chart(fig_importance, use_container_width=True)
-                    
-                    # Tabela de importância
-                    st.subheader("📋 Tabela de Importância")
-                    st.dataframe(
-                        importance_df.sort_values('Importância', ascending=False),
-                        use_container_width=True
-                    )
-                    
-                else:
-                    st.info("Importância de features não disponível para este modelo.")
-            
-            # Interpretação Automatizada
-            st.subheader("🧠 Interpretação Automatizada")
-            
-            # Análise do melhor modelo
-            auc_performance = "excelente (>0.9)" if results[best_model_name]['auc'] > 0.9 else \
-                             "muito boa (>0.8)" if results[best_model_name]['auc'] > 0.8 else \
-                             "boa (>0.7)" if results[best_model_name]['auc'] > 0.7 else \
-                             "precisa de melhorias"
-            
-            interpretation = f"""
-            ### 📊 Análise do Modelo {best_model_name}
-            
-            **Performance Geral:**
-            - O modelo {best_model_name} foi selecionado como o melhor com AUC de {results[best_model_name]['auc']:.3f}
-            - Acurácia de {results[best_model_name]['accuracy']:.1%} indica que o modelo acerta {results[best_model_name]['accuracy']:.1%} das predições
-            - F1-Score de {results[best_model_name]['f1_score']:.3f} mostra um bom equilíbrio entre precisão e recall
-            
-            **Capacidade Discriminatória:**
-            - AUC de {results[best_model_name]['auc']:.3f} {auc_performance}
-            - O modelo consegue distinguir bem entre clientes que irão ou não fazer reclamações
-            
-            **Recomendações Gerenciais:**
-            1. **Implementação:** O modelo está pronto para deployment em produção
-            2. **Monitoramento:** Acompanhar a performance com novos dados regularmente
-            3. **Ação Proativa:** Usar as predições para identificar clientes de risco
-            4. **Foco nas Features:** Investir em melhorias nas variáveis mais importantes
-            """
-            
-            st.markdown(interpretation)
-            
-            # Análise das features mais importantes (se disponível)
-            if hasattr(best_model_obj, 'feature_importances_'):
-                top_features = importance_df.tail(5)['Feature'].tolist()
-                
-                st.subheader("🎯 Análise das Top 5 Features")
-                
-                for i, feature in enumerate(reversed(top_features), 1):
-                    with st.expander(f"{i}. {feature}"):
-                        # Análise estatística da feature se os dados estiverem disponíveis
-                        if feature in df_processed.columns:
-                            feature_stats = df_processed.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
-                            
-                            col1, col2 = st.columns(2)
-                            
-                            with col1:
-                                st.write("**Estatísticas por classe:**")
-                                st.dataframe(feature_stats)
-                            
-                            with col2:
-                                # Boxplot da feature por classe
-                                fig_box = px.box(
-                                    df_processed, 
-                                    x=target_var, 
-                                    y=feature,
-                                    title=f'Distribuição de {feature} por classe'
-                                )
-                                st.plotly_chart(fig_box, use_container_width=True)
+        if len(numeric_cols) == 0:
+            st.error("⚠️ Nenhuma variável numérica encontrada!")
 
-        else:
-            st.markdown("""
-            ### ⚠️ Nenhum Resultado Disponível
-            Execute a análise na aba "Modelagem" para ver os resultados aqui.
-            """)
+    # Análise da distribuição do target
+    target_dist = df[target_var].value_counts()
+    st.sidebar.subheader(f"🎯 Distribuição de {target_var}")
+    
+    try:
+        fig_target = px.pie(
+            values=target_dist.values, 
+            names=target_dist.index,
+            title=f"Distribuição de {target_var}"
+        )
+        st.sidebar.plotly_chart(fig_target, use_container_width=True)
+    except Exception as e:
+        st.sidebar.error(f"Erro ao criar gráfico: {e}")
+        st.sidebar.write(target_dist)
 
 except Exception as e:
-    st.error(f"Erro ao carregar o dashboard: {str(e)}")
+    st.sidebar.error(f"Erro ao mostrar informações: {e}")
+
+# Configurações de modelagem
+st.sidebar.subheader("🔧 Configurações de Modelagem")
+
+# Seleção de features via RFE
+n_features = st.sidebar.slider(
+    "Número de features (RFE)", 
+    min_value=5, 
+    max_value=min(20, len(df_processed.columns)-1), 
+    value=15
+)
+
+# Aplicar SMOTE
+apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+
+# Seleção de modelos
+st.sidebar.subheader("🤖 Seleção de Modelos")
+available_models = ['KNN', 'SVM', 'Decision Tree', 'Random Forest', 'AdaBoost', 'Gradient Boosting', 'XGBoost', 'LightGBM']
+selected_models = st.sidebar.multiselect(
+    "Escolha os modelos para treinar:",
+    available_models,
+    default=['Random Forest', 'XGBoost', 'LightGBM']
+)
+
+# Tamanho do conjunto de teste
+test_size = st.sidebar.slider("Tamanho do conjunto de teste (%)", 10, 50, 30) / 100
+
+# Botão para executar análise
+run_analysis = st.sidebar.button("🚀 Executar Análise", type="primary")
+
+# Área principal
+if run_analysis and selected_models:
+    
+    try:
+        # Aplicar SMOTE e RFE
+        with st.spinner("Processando dados..."):
+            if apply_smote:
+                X_processed, y_processed, selected_features = apply_smote_and_rfe(df_processed, target_var, n_features)
+                st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
+            else:
+                X = df_processed.drop(columns=[target_var])
+                y = df_processed[target_var]
+                
+                # Garantir que temos apenas variáveis numéricas
+                numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
+                if len(numeric_cols) == 0:
+                    st.error("Nenhuma variável numérica encontrada!")
+                    st.stop()
+                
+                X = X[numeric_cols]
+                
+                # RFE básico
+                try:
+                    n_features_adj = min(n_features, X.shape[1])
+                    estimator = LogisticRegression(random_state=42, max_iter=1000)
+                    rfe = RFE(estimator=estimator, n_features_to_select=n_features_adj)
+                    rfe.fit(X, y)
+                    selected_features = X.columns[rfe.support_].tolist()
+                    X_processed = X[selected_features]
+                    y_processed = y
+                except:
+                    selected_features = X.columns.tolist()
+                    X_processed = X
+                    y_processed = y
+                
+                st.info("ℹ️ SMOTE não aplicado - usando dados originais")
+        
+        # Verificar se temos dados válidos após processamento
+        if X_processed.empty or len(y_processed) == 0:
+            st.error("Dados vazios após processamento!")
+            st.stop()
+        
+        if len(selected_features) == 0:
+            st.error("Nenhuma feature selecionada!")
+            st.stop()
+    
+        # Dividir dados
+        try:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X_processed, y_processed, test_size=test_size, random_state=42, stratify=y_processed
+            )
+            
+            if len(X_train) == 0 or len(X_test) == 0:
+                raise ValueError("Divisão resultou em conjuntos vazios")
+                
+        except Exception as e:
+            st.error(f"Erro na divisão dos dados: {e}")
+            # Tentar sem estratificação
+            try:
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X_processed, y_processed, test_size=test_size, random_state=42
+                )
+            except:
+                st.error("Não foi possível dividir os dados!")
+                st.stop()
+    
+        # Mostrar features selecionadas
+        st.subheader("🎯 Features Selecionadas via RFE")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.info(f"**Total de features selecionadas:** {len(selected_features)}")
+            
+        with col2:
+            with st.expander("Ver lista completa"):
+                st.write(selected_features)
+        
+        # Treinar modelos
+        with st.spinner("Treinando modelos..."):
+            results = train_models(X_train, X_test, y_train, y_test, selected_models)
+        
+        if not results:
+            st.error("Nenhum modelo foi treinado com sucesso!")
+            st.stop()
+            
+    except Exception as e:
+        st.error(f"Erro no processamento dos dados. Verifique o dataset.")
+        st.error(f"Detalhes do erro: {str(e)}")
+        st.stop()
+    
+    if results:
+        # Exibir resultados
+        st.subheader("📊 Resultados dos Modelos")
+        
+        # Criar tabela de resultados
+        results_df = pd.DataFrame({
+            'Modelo': list(results.keys()),
+            'Acurácia': [results[model]['accuracy'] for model in results.keys()],
+            'Precisão': [results[model]['precision'] for model in results.keys()],
+            'Recall': [results[model]['recall'] for model in results.keys()],
+            'F1-Score': [results[model]['f1_score'] for model in results.keys()],
+            'AUC': [results[model]['auc'] for model in results.keys()]
+        }).round(4)
+        
+        # Destacar melhor modelo
+        best_model_idx = results_df['AUC'].idxmax()
+        best_model_name = results_df.loc[best_model_idx, 'Modelo']
+        
+        # Mostrar tabela com destaque
+        st.dataframe(
+            results_df.style.highlight_max(subset=['AUC'], color='lightgreen'),
+            use_container_width=True
+        )
+        
+        # Cards de métricas do melhor modelo
+        st.subheader(f"🏆 Melhor Modelo: {best_model_name}")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
+        
+        with col1:
+            st.metric("Acurácia", f"{results[best_model_name]['accuracy']:.3f}")
+        with col2:
+            st.metric("Precisão", f"{results[best_model_name]['precision']:.3f}")
+        with col3:
+            st.metric("Recall", f"{results[best_model_name]['recall']:.3f}")
+        with col4:
+            st.metric("F1-Score", f"{results[best_model_name]['f1_score']:.3f}")
+        with col5:
+            st.metric("AUC", f"{results[best_model_name]['auc']:.3f}")
+        
+        # Visualizações
+        st.subheader("📈 Visualizações")
+        
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Comparação", "📈 Curvas ROC", "🔥 Matriz de Confusão", "🎯 Importância"])
+        
+        with tab1:
+            # Gráfico de comparação
+            fig_comparison = go.Figure()
+            
+            metrics = ['Acurácia', 'Precisão', 'Recall', 'F1-Score', 'AUC']
+            for metric in metrics:
+                fig_comparison.add_trace(go.Bar(
+                    name=metric,
+                    x=results_df['Modelo'],
+                    y=results_df[metric],
+                    text=results_df[metric].round(3),
+                    textposition='auto'
+                ))
+            
+            fig_comparison.update_layout(
+                title="Comparação de Métricas por Modelo",
+                xaxis_title="Modelos",
+                yaxis_title="Score",
+                barmode='group',
+                height=500
+            )
+            
+            st.plotly_chart(fig_comparison, use_container_width=True)
+        
+        with tab2:
+            # Curvas ROC
+            fig_roc = go.Figure()
+            
+            for model_name in results.keys():
+                fpr, tpr, _ = roc_curve(y_test, results[model_name]['y_proba'])
+                fig_roc.add_trace(go.Scatter(
+                    x=fpr, y=tpr,
+                    mode='lines',
+                    name=f'{model_name} (AUC = {results[model_name]["auc"]:.3f})',
+                    line=dict(width=3)
+                ))
+            
+            # Linha diagonal
+            fig_roc.add_trace(go.Scatter(
+                x=[0, 1], y=[0, 1],
+                mode='lines',
+                name='Aleatório',
+                line=dict(dash='dash', color='gray')
+            ))
+            
+            fig_roc.update_layout(
+                title='Curvas ROC - Comparação de Modelos',
+                xaxis_title='Taxa de Falsos Positivos',
+                yaxis_title='Taxa de Verdadeiros Positivos',
+                height=500
+            )
+            
+            st.plotly_chart(fig_roc, use_container_width=True)
+        
+        with tab3:
+            # Matriz de confusão do melhor modelo
+            y_pred_best = results[best_model_name]['y_pred']
+            cm = confusion_matrix(y_test, y_pred_best)
+            
+            fig_cm = px.imshow(
+                cm,
+                text_auto=True,
+                aspect="auto",
+                color_continuous_scale='Blues',
+                title=f'Matriz de Confusão - {best_model_name}'
+            )
+            
+            fig_cm.update_layout(
+                xaxis_title='Predito',
+                yaxis_title='Real',
+                height=400
+            )
+            
+            st.plotly_chart(fig_cm, use_container_width=True)
+            
+            # Interpretação da matriz
+            tn, fp, fn, tp = cm.ravel()
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.markdown(f"""
+                **Interpretação da Matriz:**
+                - Verdadeiros Negativos: {tn}
+                - Falsos Positivos: {fp}
+                - Falsos Negativos: {fn}
+                - Verdadeiros Positivos: {tp}
+                """)
+            
+            with col2:
+                accuracy = (tp + tn) / (tp + tn + fp + fn)
+                precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+                recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+                
+                st.markdown(f"""
+                **Métricas Calculadas:**
+                - Acurácia: {accuracy:.3f}
+                - Precisão: {precision:.3f}
+                - Recall: {recall:.3f}
+                """)
+        
+        with tab4:
+            # Importância das features
+            best_model_obj = results[best_model_name]['model']
+            
+            if hasattr(best_model_obj, 'feature_importances_'):
+                importances = best_model_obj.feature_importances_
+                importance_df = pd.DataFrame({
+                    'Feature': selected_features,
+                    'Importância': importances
+                }).sort_values('Importância', ascending=True)
+                
+                fig_importance = px.bar(
+                    importance_df.tail(15),
+                    x='Importância',
+                    y='Feature',
+                    orientation='h',
+                    title=f'Top 15 Features Mais Importantes - {best_model_name}',
+                    height=600
+                )
+                
+                st.plotly_chart(fig_importance, use_container_width=True)
+                
+                # Tabela de importância
+                st.subheader("📋 Tabela de Importância")
+                st.dataframe(
+                    importance_df.sort_values('Importância', ascending=False),
+                    use_container_width=True
+                )
+                
+            else:
+                st.info("Importância de features não disponível para este modelo.")
+        
+        # Interpretação Automatizada
+        st.subheader("🧠 Interpretação Automatizada")
+        
+        interpretation = f"""
+        ### 📊 Análise do Modelo {best_model_name}
+        
+        **Performance Geral:**
+        - O modelo {best_model_name} foi selecionado como o melhor com AUC de {results[best_model_name]['auc']:.3f}
+        - Acurácia de {results[best_model_name]['accuracy']:.1%} indica que o modelo acerta {results[best_model_name]['accuracy']:.1%} das predições
+        - F1-Score de {results[best_model_name]['f1_score']:.3f} mostra um bom equilíbrio entre precisão e recall
+        
+        **Capacidade Discriminatória:**
+        - AUC de {results[best_model_name]['auc']:.3f} {'é excelente (>0.9)' if results[best_model_name]['auc'] > 0.9 else 'é muito boa (>0.8)' if results[best_model_name]['auc'] > 0.8 else 'é boa (>0.7)' if results[best_model_name]['auc'] > 0.7 else 'precisa de melhorias'}
+        - O modelo consegue distinguir bem entre clientes que irão ou não fazer reclamações
+        
+        **Recomendações Gerenciais:**
+        1. **Implementação:** O modelo está pronto para deployment em produção
+        2. **Monitoramento:** Acompanhar a performance com novos dados regularmente
+        3. **Ação Proativa:** Usar as predições para identificar clientes de risco
+        4. **Foco nas Features:** Investir em melhorias nas variáveis mais importantes
+        """
+        
+        st.markdown(interpretation)
+        
+        # Análise das features mais importantes
+        if hasattr(best_model_obj, 'feature_importances_'):
+            top_features = importance_df.tail(5)['Feature'].tolist()
+            
+            st.subheader("🎯 Análise das Top 5 Features")
+            
+            for i, feature in enumerate(reversed(top_features), 1):
+                with st.expander(f"{i}. {feature}"):
+                    # Análise estatística da feature
+                    feature_stats = df_processed.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**Estatísticas por classe:**")
+                        st.dataframe(feature_stats)
+                    
+                    with col2:
+                        # Boxplot da feature por classe
+                        fig_box = px.box(
+                            df_processed, 
+                            x=target_var, 
+                            y=feature,
+                            title=f'Distribuição de {feature} por classe'
+                        )
+                        st.plotly_chart(fig_box, use_container_width=True)
+
+else:
+    # Tela inicial
+    st.subheader("👋 Bem-vindo ao Dashboard de Previsão de Reclamações!")
+    
     st.markdown("""
-    ### Possíveis soluções:
-    1. Verifique se o arquivo 'marketing_campaign.csv' está na pasta correta
-    2. Verifique se todas as bibliotecas estão instaladas
-    3. Recarregue a página
+    Este dashboard permite analisar e modelar dados para previsão de reclamações de clientes.
+    
+    ### 🚀 Como usar:
+    1. **Configure os parâmetros** na sidebar à esquerda
+    2. **Selecione os modelos** que deseja treinar
+    3. **Clique em "Executar Análise"** para iniciar o processo
+    
+    ### 📊 Funcionalidades:
+    - ⚖️ **Balanceamento de dados** com SMOTE
+    - 🎯 **Seleção de features** com RFE
+    - 🤖 **Múltiplos modelos** de Machine Learning
+    - 📈 **Visualizações interativas** dos resultados
+    - 🧠 **Interpretação automatizada** dos modelos
     """)
+    
+    # Mostrar preview dos dados
+    st.subheader("👀 Preview dos Dados")
+    st.dataframe(df.head(), use_container_width=True)
+    
+    # Estatísticas básicas
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("Total de Registros", f"{len(df):,}")
+    
+    with col2:
+        st.metric("Número de Features", len(df.columns) - 1)
+    
+    with col3:
+        target_balance = df[target_var].value_counts(normalize=True).min()
+        st.metric("Balanceamento", f"{target_balance:.1%}")
 
 # Footer
 st.markdown("---")

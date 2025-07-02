@@ -33,7 +33,12 @@ import xgboost as xgb
 import lightgbm as lgb
 
 # Balanceamento
-from imblearn.over_sampling import SMOTE
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    st.warning("⚠️ SMOTE não disponível. Usando dados originais.")
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -111,7 +116,7 @@ st.markdown("""
 def load_and_process_data():
     """Carrega e processa os dados"""
     try:
-        # Tentar carregar o arquivo
+        # Tentar carregar o arquivo do Kaggle Customer Personality Analysis
         df = pd.read_csv('marketing_campaign.csv')
         
         # Se não encontrar a variável Complain, procurar alternativas
@@ -199,7 +204,7 @@ def load_and_process_data():
         return df, df_processed, 'Complain', le_dict
 
 @st.cache_data
-def apply_smote_and_rfe(df_processed, target_var, n_features=15):
+def apply_smote_and_rfe(df_processed, target_var, n_features=15, apply_smote=True):
     """Aplica SMOTE e RFE aos dados"""
     X = df_processed.drop(columns=[target_var])
     y = df_processed[target_var]
@@ -221,21 +226,25 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15):
     X_clean = X_clean[mask]
     y_clean = y_clean[mask]
     
-    # Verificar se temos dados suficientes para SMOTE
-    min_samples = y_clean.value_counts().min()
-    
-    try:
-        if min_samples >= 2:
-            # SMOTE
-            k_neighbors = min(5, min_samples - 1)
-            smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
-            X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
-        else:
-            # Se não der para aplicar SMOTE, usar dados originais
+    # Aplicar SMOTE se disponível e solicitado
+    if SMOTE_AVAILABLE and apply_smote:
+        # Verificar se temos dados suficientes para SMOTE
+        min_samples = y_clean.value_counts().min()
+        
+        try:
+            if min_samples >= 2:
+                # SMOTE
+                k_neighbors = min(5, min_samples - 1)
+                smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
+                X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
+            else:
+                # Se não der para aplicar SMOTE, usar dados originais
+                X_balanced, y_balanced = X_clean, y_clean
+                
+        except Exception as e:
+            st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
             X_balanced, y_balanced = X_clean, y_clean
-            
-    except Exception as e:
-        st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
+    else:
         X_balanced, y_balanced = X_clean, y_clean
     
     # RFE
@@ -265,7 +274,8 @@ def train_models(X_train, X_test, y_train, y_test, selected_models):
         'AdaBoost': AdaBoostClassifier(random_state=42),
         'Gradient Boosting': GradientBoostingClassifier(random_state=42),
         'XGBoost': xgb.XGBClassifier(random_state=42, eval_metric='logloss'),
-        'LightGBM': lgb.LGBMClassifier(random_state=42, verbose=-1)
+        'LightGBM': lgb.LGBMClassifier(random_state=42, verbose=-1),
+        'Logistic Regression': LogisticRegression(random_state=42, max_iter=1000)
     }
     
     results = {}
@@ -277,29 +287,32 @@ def train_models(X_train, X_test, y_train, y_test, selected_models):
     
     for model_name in selected_models:
         if model_name in models:
-            model = models[model_name]
-            
-            # Usar dados padronizados para KNN e SVM
-            if model_name in ['KNN', 'SVM']:
-                model.fit(X_train_scaled, y_train)
-                y_pred = model.predict(X_test_scaled)
-                y_proba = model.predict_proba(X_test_scaled)[:, 1]
-            else:
-                model.fit(X_train, y_train)
-                y_pred = model.predict(X_test)
-                y_proba = model.predict_proba(X_test)[:, 1]
-            
-            # Calcular métricas
-            results[model_name] = {
-                'accuracy': accuracy_score(y_test, y_pred),
-                'precision': precision_score(y_test, y_pred, average='weighted'),
-                'recall': recall_score(y_test, y_pred, average='weighted'),
-                'f1_score': f1_score(y_test, y_pred, average='weighted'),
-                'auc': roc_auc_score(y_test, y_proba),
-                'y_pred': y_pred,
-                'y_proba': y_proba,
-                'model': model
-            }
+            try:
+                model = models[model_name]
+                
+                # Usar dados padronizados para KNN e SVM
+                if model_name in ['KNN', 'SVM']:
+                    model.fit(X_train_scaled, y_train)
+                    y_pred = model.predict(X_test_scaled)
+                    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+                else:
+                    model.fit(X_train, y_train)
+                    y_pred = model.predict(X_test)
+                    y_proba = model.predict_proba(X_test)[:, 1]
+                
+                # Calcular métricas
+                results[model_name] = {
+                    'accuracy': accuracy_score(y_test, y_pred),
+                    'precision': precision_score(y_test, y_pred, average='weighted', zero_division=0),
+                    'recall': recall_score(y_test, y_pred, average='weighted', zero_division=0),
+                    'f1_score': f1_score(y_test, y_pred, average='weighted', zero_division=0),
+                    'auc': roc_auc_score(y_test, y_proba),
+                    'y_pred': y_pred,
+                    'y_proba': y_proba,
+                    'model': model
+                }
+            except Exception as e:
+                st.error(f"Erro ao treinar {model_name}: {str(e)}")
     
     return results
 
@@ -309,16 +322,46 @@ df, df_processed, target_var, le_dict = load_and_process_data()
 # Sidebar
 st.sidebar.header("⚙️ Configurações")
 
-# Informações do dataset
+# Seção 1: Filtros de dados
+st.sidebar.subheader("🔍 Filtros de Dados")
+
+# Filtros dinâmicos baseados nos dados
+with st.sidebar.expander("Filtrar Dados", expanded=False):
+    # Filtro por idade (se existir)
+    if 'Age' in df.columns:
+        age_range = st.slider(
+            "Faixa de Idade", 
+            int(df['Age'].min()), 
+            int(df['Age'].max()), 
+            (int(df['Age'].min()), int(df['Age'].max()))
+        )
+        df_filtered = df[(df['Age'] >= age_range[0]) & (df['Age'] <= age_range[1])]
+        df_processed_filtered = df_processed[(df_processed['Age'] >= age_range[0]) & (df_processed['Age'] <= age_range[1])]
+    else:
+        df_filtered = df.copy()
+        df_processed_filtered = df_processed.copy()
+    
+    # Filtro por renda (se existir)
+    if 'Income' in df.columns:
+        income_range = st.slider(
+            "Faixa de Renda", 
+            float(df['Income'].min()), 
+            float(df['Income'].max()), 
+            (float(df['Income'].min()), float(df['Income'].max()))
+        )
+        df_filtered = df_filtered[(df_filtered['Income'] >= income_range[0]) & (df_filtered['Income'] <= income_range[1])]
+        df_processed_filtered = df_processed_filtered[(df_processed_filtered['Income'] >= income_range[0]) & (df_processed_filtered['Income'] <= income_range[1])]
+
+# Informações do dataset filtrado
 st.sidebar.subheader("📊 Informações do Dataset")
 st.sidebar.info(f"""
-**Dimensões:** {df.shape[0]} linhas × {df.shape[1]} colunas
+**Dimensões:** {df_filtered.shape[0]} linhas × {df_filtered.shape[1]} colunas
 **Variável Target:** {target_var}
-**Missing Values:** {df.isnull().sum().sum()}
+**Missing Values:** {df_filtered.isnull().sum().sum()}
 """)
 
 # Análise da distribuição do target
-target_dist = df[target_var].value_counts()
+target_dist = df_filtered[target_var].value_counts()
 st.sidebar.subheader(f"🎯 Distribuição de {target_var}")
 fig_target = px.pie(
     values=target_dist.values, 
@@ -327,27 +370,45 @@ fig_target = px.pie(
 )
 st.sidebar.plotly_chart(fig_target, use_container_width=True)
 
-# Configurações de modelagem
-st.sidebar.subheader("🔧 Configurações de Modelagem")
+# Seção 2: Seleção dinâmica de variáveis
+st.sidebar.subheader("🎯 Seleção de Variáveis")
 
-# Seleção de features via RFE
-n_features = st.sidebar.slider(
-    "Número de features (RFE)", 
-    min_value=5, 
-    max_value=min(20, len(df_processed.columns)-1), 
-    value=15
+# Seleção manual de features
+available_features = [col for col in df_processed_filtered.columns if col != target_var]
+manual_features = st.sidebar.multiselect(
+    "Selecionar variáveis manualmente:",
+    available_features,
+    default=available_features[:10] if len(available_features) > 10 else available_features
 )
 
+# Seleção de features via RFE
+apply_rfe = st.sidebar.checkbox("Aplicar RFE para seleção automática", value=True)
+if apply_rfe:
+    n_features = st.sidebar.slider(
+        "Número de features (RFE)", 
+        min_value=5, 
+        max_value=min(20, len(available_features)), 
+        value=15
+    )
+else:
+    n_features = len(manual_features)
+
 # Aplicar SMOTE
-apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+if SMOTE_AVAILABLE:
+    apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+else:
+    apply_smote = False
+
+# Seção 3: Configurações de modelagem
+st.sidebar.subheader("🤖 Configurações de Modelos")
 
 # Seleção de modelos
-st.sidebar.subheader("🤖 Seleção de Modelos")
-available_models = ['KNN', 'SVM', 'Decision Tree', 'Random Forest', 'AdaBoost', 'Gradient Boosting', 'XGBoost', 'LightGBM']
+available_models = ['KNN', 'SVM', 'Decision Tree', 'Random Forest', 'AdaBoost', 
+                   'Gradient Boosting', 'XGBoost', 'LightGBM', 'Logistic Regression']
 selected_models = st.sidebar.multiselect(
     "Escolha os modelos para treinar:",
     available_models,
-    default=['Random Forest', 'XGBoost', 'LightGBM']
+    default=['Random Forest', 'XGBoost', 'LightGBM', 'Logistic Regression']
 )
 
 # Tamanho do conjunto de teste
@@ -359,21 +420,30 @@ run_analysis = st.sidebar.button("🚀 Executar Análise", type="primary")
 # Área principal
 if run_analysis and selected_models:
     
-    # Aplicar SMOTE e RFE
-    with st.spinner("Processando dados..."):
-        if apply_smote:
-            X_processed, y_processed, selected_features = apply_smote_and_rfe(df_processed, target_var, n_features)
-            st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
-        else:
-            X = df_processed.drop(columns=[target_var])
-            y = df_processed[target_var]
-            estimator = LogisticRegression(random_state=42, max_iter=1000)
-            rfe = RFE(estimator=estimator, n_features_to_select=n_features)
-            rfe.fit(X, y)
-            selected_features = X.columns[rfe.support_].tolist()
-            X_processed = X[selected_features]
-            y_processed = y
-            st.info("ℹ️ SMOTE não aplicado - usando dados originais")
+    # Aplicar seleção de variáveis
+    if apply_rfe:
+        with st.spinner("Processando dados e aplicando RFE..."):
+            X_processed, y_processed, selected_features = apply_smote_and_rfe(
+                df_processed_filtered, target_var, n_features, apply_smote
+            )
+            if apply_smote and SMOTE_AVAILABLE:
+                st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
+            else:
+                st.info("ℹ️ SMOTE não aplicado - usando dados originais")
+    else:
+        # Usar seleção manual
+        X_processed = df_processed_filtered[manual_features]
+        y_processed = df_processed_filtered[target_var]
+        selected_features = manual_features
+        
+        if apply_smote and SMOTE_AVAILABLE:
+            # Aplicar apenas SMOTE
+            try:
+                smote = SMOTE(random_state=42, k_neighbors=min(5, y_processed.value_counts().min() - 1))
+                X_processed, y_processed = smote.fit_resample(X_processed, y_processed)
+                st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
+            except:
+                st.warning("⚠️ Não foi possível aplicar SMOTE. Usando dados originais.")
     
     # Dividir dados
     X_train, X_test, y_train, y_test = train_test_split(
@@ -381,7 +451,7 @@ if run_analysis and selected_models:
     )
     
     # Mostrar features selecionadas
-    st.subheader("🎯 Features Selecionadas via RFE")
+    st.subheader("🎯 Features Selecionadas")
     col1, col2 = st.columns(2)
     
     with col1:
@@ -438,7 +508,7 @@ if run_analysis and selected_models:
         # Visualizações
         st.subheader("📈 Visualizações")
         
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Comparação", "📈 Curvas ROC", "🔥 Matriz de Confusão", "🎯 Importância"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 Comparação", "📈 Curvas ROC", "🔥 Matriz de Confusão", "🎯 Importância", "🧠 Interpretação"])
         
         with tab1:
             # Gráfico de comparação
@@ -569,78 +639,120 @@ if run_analysis and selected_models:
                     use_container_width=True
                 )
                 
+            elif hasattr(best_model_obj, 'coef_'):
+                # Para modelos lineares
+                coefficients = best_model_obj.coef_[0]
+                coef_df = pd.DataFrame({
+                    'Feature': selected_features,
+                    'Coeficiente': coefficients,
+                    'Importância (abs)': np.abs(coefficients)
+                }).sort_values('Importância (abs)', ascending=True)
+                
+                fig_coef = px.bar(
+                    coef_df.tail(15),
+                    x='Coeficiente',
+                    y='Feature',
+                    orientation='h',
+                    title=f'Coeficientes do Modelo - {best_model_name}',
+                    height=600
+                )
+                
+                st.plotly_chart(fig_coef, use_container_width=True)
+                
+                # Tabela de coeficientes
+                st.subheader("📋 Tabela de Coeficientes")
+                st.dataframe(
+                    coef_df.sort_values('Importância (abs)', ascending=False),
+                    use_container_width=True
+                )
             else:
                 st.info("Importância de features não disponível para este modelo.")
         
-        # Interpretação Automatizada
-        st.subheader("🧠 Interpretação Automatizada")
-        
-        interpretation = f"""
-        ### 📊 Análise do Modelo {best_model_name}
-        
-        **Performance Geral:**
-        - O modelo {best_model_name} foi selecionado como o melhor com AUC de {results[best_model_name]['auc']:.3f}
-        - Acurácia de {results[best_model_name]['accuracy']:.1%} indica que o modelo acerta {results[best_model_name]['accuracy']:.1%} das predições
-        - F1-Score de {results[best_model_name]['f1_score']:.3f} mostra um bom equilíbrio entre precisão e recall
-        
-        **Capacidade Discriminatória:**
-        - AUC de {results[best_model_name]['auc']:.3f} {'é excelente (>0.9)' if results[best_model_name]['auc'] > 0.9 else 'é muito boa (>0.8)' if results[best_model_name]['auc'] > 0.8 else 'é boa (>0.7)' if results[best_model_name]['auc'] > 0.7 else 'precisa de melhorias'}
-        - O modelo consegue distinguir bem entre clientes que irão ou não fazer reclamações
-        
-        **Recomendações Gerenciais:**
-        1. **Implementação:** O modelo está pronto para deployment em produção
-        2. **Monitoramento:** Acompanhar a performance com novos dados regularmente
-        3. **Ação Proativa:** Usar as predições para identificar clientes de risco
-        4. **Foco nas Features:** Investir em melhorias nas variáveis mais importantes
-        """
-        
-        st.markdown(interpretation)
-        
-        # Análise das features mais importantes
-        if hasattr(best_model_obj, 'feature_importances_'):
-            top_features = importance_df.tail(5)['Feature'].tolist()
+        with tab5:
+            # Interpretação Automatizada
+            st.subheader("🧠 Interpretação Automatizada")
             
-            st.subheader("🎯 Análise das Top 5 Features")
+            interpretation = f"""
+            ### 📊 Análise do Modelo {best_model_name}
             
-            for i, feature in enumerate(reversed(top_features), 1):
-                with st.expander(f"{i}. {feature}"):
-                    # Análise estatística da feature
-                    feature_stats = df_processed.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
-                    
-                    col1, col2 = st.columns(2)
-                    
-                    with col1:
-                        st.write("**Estatísticas por classe:**")
-                        st.dataframe(feature_stats)
-                    
-                    with col2:
-                        # Boxplot da feature por classe
-                        fig_box = px.box(
-                            df_processed, 
-                            x=target_var, 
-                            y=feature,
-                            title=f'Distribuição de {feature} por classe'
-                        )
-                        st.plotly_chart(fig_box, use_container_width=True)
+            **Performance Geral:**
+            - O modelo {best_model_name} foi selecionado como o melhor com AUC de {results[best_model_name]['auc']:.3f}
+            - Acurácia de {results[best_model_name]['accuracy']:.1%} indica que o modelo acerta {results[best_model_name]['accuracy']:.1%} das predições
+            - F1-Score de {results[best_model_name]['f1_score']:.3f} mostra um bom equilíbrio entre precisão e recall
+            
+            **Capacidade Discriminatória:**
+            - AUC de {results[best_model_name]['auc']:.3f} {'é excelente (>0.9)' if results[best_model_name]['auc'] > 0.9 else 'é muito boa (>0.8)' if results[best_model_name]['auc'] > 0.8 else 'é boa (>0.7)' if results[best_model_name]['auc'] > 0.7 else 'precisa de melhorias'}
+            - O modelo consegue distinguir bem entre clientes que irão ou não fazer reclamações
+            
+            **Recomendações Gerenciais:**
+            1. **Implementação:** O modelo está pronto para deployment em produção
+            2. **Monitoramento:** Acompanhar a performance com novos dados regularmente
+            3. **Ação Proativa:** Usar as predições para identificar clientes de risco
+            4. **Foco nas Features:** Investir em melhorias nas variáveis mais importantes
+            
+            **Insights Estratégicos:**
+            - Clientes com características específicas têm maior propensão a reclamar
+            - A empresa pode usar essas informações para ações preventivas
+            - Personalização do atendimento baseada no score de risco
+            """
+            
+            st.markdown(interpretation)
+            
+            # Análise das features mais importantes
+            if hasattr(best_model_obj, 'feature_importances_'):
+                top_features = importance_df.tail(5)['Feature'].tolist()
+                
+                st.subheader("🎯 Análise das Top 5 Features")
+                
+                for i, feature in enumerate(reversed(top_features), 1):
+                    with st.expander(f"{i}. {feature}"):
+                        # Análise estatística da feature
+                        if feature in df_processed_filtered.columns:
+                            feature_stats = df_processed_filtered.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
+                            
+                            col1, col2 = st.columns(2)
+                            
+                            with col1:
+                                st.write("**Estatísticas por classe:**")
+                                st.dataframe(feature_stats)
+                            
+                            with col2:
+                                # Boxplot da feature por classe
+                                fig_box = px.box(
+                                    df_processed_filtered, 
+                                    x=target_var, 
+                                    y=feature,
+                                    title=f'Distribuição de {feature} por classe'
+                                )
+                                st.plotly_chart(fig_box, use_container_width=True)
 
 else:
     # Tela inicial
     st.subheader("👋 Bem-vindo ao Dashboard de Previsão de Reclamações!")
     
     st.markdown("""
-    Este dashboard permite analisar e modelar dados para previsão de reclamações de clientes.
+    Este dashboard permite analisar e modelar dados para previsão de reclamações de clientes usando múltiplos algoritmos de Machine Learning.
     
     ### 🚀 Como usar:
-    1. **Configure os parâmetros** na sidebar à esquerda
-    2. **Selecione os modelos** que deseja treinar
-    3. **Clique em "Executar Análise"** para iniciar o processo
+    1. **Configure os filtros** na sidebar para selecionar subconjuntos dos dados
+    2. **Escolha as variáveis** manualmente ou use RFE para seleção automática
+    3. **Selecione os modelos** que deseja treinar e comparar
+    4. **Clique em "Executar Análise"** para iniciar o processo
     
     ### 📊 Funcionalidades:
-    - ⚖️ **Balanceamento de dados** com SMOTE
-    - 🎯 **Seleção de features** com RFE
+    - 🔍 **Filtros interativos** para exploração dos dados
+    - 🎯 **Seleção dinâmica** de variáveis para modelagem
+    - ⚖️ **Balanceamento de dados** com SMOTE (quando disponível)
     - 🤖 **Múltiplos modelos** de Machine Learning
     - 📈 **Visualizações interativas** dos resultados
     - 🧠 **Interpretação automatizada** dos modelos
+    - 📋 **Análise de importância** das variáveis
+    
+    ### 🎯 Modelos Disponíveis:
+    - **Baseados em Distância:** KNN, SVM
+    - **Bagging:** Decision Tree, Random Forest  
+    - **Boosting:** AdaBoost, Gradient Boosting, XGBoost, LightGBM
+    - **Linear:** Logistic Regression
     """)
     
     # Mostrar preview dos dados
@@ -659,6 +771,18 @@ else:
     with col3:
         target_balance = df[target_var].value_counts(normalize=True).min()
         st.metric("Balanceamento", f"{target_balance:.1%}")
+    
+    # Gráfico de distribuição do target
+    st.subheader("📊 Distribuição da Variável Target")
+    target_counts = df[target_var].value_counts()
+    
+    fig_dist = px.bar(
+        x=target_counts.index, 
+        y=target_counts.values,
+        title=f'Distribuição da variável {target_var}',
+        labels={'x': target_var, 'y': 'Frequência'}
+    )
+    st.plotly_chart(fig_dist, use_container_width=True)
 
 # Footer
 st.markdown("---")
@@ -667,5 +791,6 @@ st.markdown("""
     <p>Dashboard desenvolvido para a Tarefa 4 - SIEP</p>
     <p><strong>Alunos:</strong> Rafael Leivas Bisi (231013467) | Tiago André Gondim (231013476)</p>
     <p><strong>Professor:</strong> João Gabriel de Moraes Souza</p>
+    <p><i>Universidade de Brasília - Engenharia de Produção</i></p>
 </div>
 """, unsafe_allow_html=True)

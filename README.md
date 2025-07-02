@@ -1,8 +1,9 @@
 # 📊 Dashboard - Previsão de Reclamações com Modelos Supervisionados
 
-![Python](https://img.shields.io/badge/python-+-blue.svg)
-![Streamlit](https://img.shields.io/badge/streamlit-+-red.svg)
-![Scikit-learn](https://img.shields.io/badge/scikit--learn-+-orange.svg)
+![Python](https://img.shields.io/badge/python-3.8+-blue.svg)
+![Streamlit](https://img.shields.io/badge/streamlit-1.28.2-red.svg)
+![Scikit-learn](https://img.shields.io/badge/scikit--learn-1.3.2-orange.svg)
+![Status](https://img.shields.io/badge/status-working-green.svg)
 
 ## 🎯 Sobre o Projeto
 
@@ -23,8 +24,8 @@ Dashboard interativo desenvolvido para a **Tarefa 4 - SIEP** da disciplina de Si
 
 ### 🎯 Modelagem
 - **Seleção de Variáveis:** Manual ou automática via RFE
-- **Balanceamento:** SMOTE para dados desbalanceados
-- **Múltiplos Modelos:** 9 algoritmos de Machine Learning
+- **Balanceamento:** SMOTE para dados desbalanceados (quando disponível)
+- **Múltiplos Modelos:** 8 algoritmos de Machine Learning
 
 ### 📈 Modelos Implementados
 
@@ -42,9 +43,6 @@ Dashboard interativo desenvolvido para a **Tarefa 4 - SIEP** da disciplina de Si
 - XGBoost
 - LightGBM
 
-#### Linear
-- Logistic Regression
-
 ### 📊 Métricas e Visualizações
 - **Métricas:** Acurácia, Precisão, Recall, F1-Score, AUC
 - **Curva ROC:** Comparação entre modelos
@@ -59,16 +57,20 @@ Dashboard interativo desenvolvido para a **Tarefa 4 - SIEP** da disciplina de Si
 ## 🛠️ Tecnologias Utilizadas
 
 - **Python 3.8+**
-- **Streamlit** - Interface web interativa
-- **Scikit-learn** - Algoritmos de Machine Learning
+- **Streamlit 1.28.2** - Interface web interativa
+- **Scikit-learn 1.3.2** - Algoritmos de Machine Learning
 - **XGBoost & LightGBM** - Algoritmos de Boosting avançados
-- **Plotly** - Visualizações interativas
+- **Plotly 5.17.0** - Visualizações interativas
 - **Pandas & NumPy** - Manipulação de dados
-- **Imbalanced-learn** - Balanceamento de dados com SMOTE
+- **Imbalanced-learn 0.11.0** - Balanceamento de dados com SMOTE
 
 ## 📦 Instalação e Execução
 
-### Localmente
+### Pré-requisitos
+- Python 3.8 ou superior
+- Git
+
+### Passo a Passo
 
 1. **Clone o repositório:**
 ```bash
@@ -84,6 +86,11 @@ pip install -r requirements.txt
 3. **Execute o dashboard:**
 ```bash
 streamlit run app.py
+```
+
+4. **Acesse no navegador:**
+```
+http://localhost:8501
 ```
 
 ## 📁 Estrutura do Projeto
@@ -111,11 +118,10 @@ O projeto utiliza o dataset **Customer Personality Analysis** do Kaggle, que con
 
 ## 🎮 Como Usar
 
-1. **Acesse o dashboard** via Streamlit Cloud ou execute localmente
-2. **Configure os filtros** na sidebar para explorar subconjuntos dos dados
-3. **Selecione as variáveis** manualmente ou use RFE para seleção automática
-4. **Escolha os modelos** que deseja treinar e comparar
-5. **Execute a análise** e explore os resultados interativamente
+1. **Configure os filtros** na sidebar para explorar subconjuntos dos dados
+2. **Selecione as variáveis** manualmente ou use RFE para seleção automática
+3. **Escolha os modelos** que deseja treinar e comparar
+4. **Execute a análise** e explore os resultados interativamente
 
 ## 📈 Resultados
 
@@ -146,17 +152,32 @@ O dashboard fornece:
 
 ## 🔧 Troubleshooting
 
-### Erro de Importação do SMOTE
-Se encontrar erros relacionados ao `imbalanced-learn`, o dashboard automaticamente:
-- Detecta a indisponibilidade da biblioteca
-- Continua funcionando com dados originais
-- Exibe avisos informativos ao usuário
+### Problema com SMOTE
+Se encontrar erros relacionados ao `imbalanced-learn`:
+- O dashboard detecta automaticamente a disponibilidade
+- Continua funcionando com dados originais se SMOTE não estiver disponível
+- Usa versões compatíveis especificadas no requirements.txt
 
 ### Dataset Não Encontrado
 Se o arquivo `marketing_campaign.csv` não estiver presente:
 - O dashboard gera automaticamente um dataset sintético
 - Mantém todas as funcionalidades ativas
 - Exibe aviso sobre o uso de dados sintéticos
+
+### Problemas de Compatibilidade
+- Use as versões exatas especificadas no `requirements.txt`
+- Execute `pip install -r requirements.txt` para garantir compatibilidade
+
+## 🚀 Deploy no Streamlit Cloud
+
+1. **Faça o push para o GitHub**
+2. **Acesse [share.streamlit.io](https://share.streamlit.io)**
+3. **Conecte seu repositório GitHub**
+4. **Configure:**
+   - Repository: `seu-usuario/tarefa4-siep-dashboard`
+   - Branch: `main`
+   - Main file path: `app.py`
+5. **Deploy!**
 
 ## 🤝 Contribuição
 

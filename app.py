@@ -32,8 +32,13 @@ from sklearn.linear_model import LogisticRegression
 import xgboost as xgb
 import lightgbm as lgb
 
-# Balanceamento
-from imblearn.over_sampling import SMOTE
+# Balanceamento - Com tratamento de erro
+try:
+    from imblearn.over_sampling import SMOTE
+    SMOTE_AVAILABLE = True
+except ImportError:
+    SMOTE_AVAILABLE = False
+    st.warning("⚠️ SMOTE não disponível. Usando dados originais.")
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -199,7 +204,7 @@ def load_and_process_data():
         return df, df_processed, 'Complain', le_dict
 
 @st.cache_data
-def apply_smote_and_rfe(df_processed, target_var, n_features=15):
+def apply_smote_and_rfe(df_processed, target_var, n_features=15, use_smote=True):
     """Aplica SMOTE e RFE aos dados"""
     X = df_processed.drop(columns=[target_var])
     y = df_processed[target_var]
@@ -221,21 +226,22 @@ def apply_smote_and_rfe(df_processed, target_var, n_features=15):
     X_clean = X_clean[mask]
     y_clean = y_clean[mask]
     
-    # Verificar se temos dados suficientes para SMOTE
-    min_samples = y_clean.value_counts().min()
-    
-    try:
-        if min_samples >= 2:
-            # SMOTE
-            k_neighbors = min(5, min_samples - 1)
-            smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
-            X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
-        else:
-            # Se não der para aplicar SMOTE, usar dados originais
+    # SMOTE se disponível e solicitado
+    if SMOTE_AVAILABLE and use_smote:
+        min_samples = y_clean.value_counts().min()
+        
+        try:
+            if min_samples >= 2:
+                k_neighbors = min(5, min_samples - 1)
+                smote = SMOTE(random_state=42, k_neighbors=max(1, k_neighbors))
+                X_balanced, y_balanced = smote.fit_resample(X_clean, y_clean)
+            else:
+                X_balanced, y_balanced = X_clean, y_clean
+                
+        except Exception as e:
+            st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
             X_balanced, y_balanced = X_clean, y_clean
-            
-    except Exception as e:
-        st.warning(f"Erro ao aplicar SMOTE: {str(e)}. Usando dados originais.")
+    else:
         X_balanced, y_balanced = X_clean, y_clean
     
     # RFE
@@ -372,15 +378,62 @@ except Exception as e:
 # Sidebar
 st.sidebar.header("⚙️ Configurações")
 
+# Seção de Filtros de Dados
+st.sidebar.subheader("🔍 Filtros de Dados")
+
+# Filtros dinâmicos baseados no dataset
+if not df.empty:
+    # Filtro por idade se existir
+    if 'Age' in df.columns:
+        age_range = st.sidebar.slider(
+            "Faixa de Idade",
+            min_value=int(df['Age'].min()),
+            max_value=int(df['Age'].max()),
+            value=(int(df['Age'].min()), int(df['Age'].max()))
+        )
+        df_filtered = df[(df['Age'] >= age_range[0]) & (df['Age'] <= age_range[1])]
+    else:
+        df_filtered = df.copy()
+    
+    # Filtro por Income se existir
+    if 'Income' in df.columns:
+        income_range = st.sidebar.slider(
+            "Faixa de Renda",
+            min_value=float(df['Income'].min()),
+            max_value=float(df['Income'].max()),
+            value=(float(df['Income'].min()), float(df['Income'].max())),
+            format="%.0f"
+        )
+        df_filtered = df_filtered[(df_filtered['Income'] >= income_range[0]) & (df_filtered['Income'] <= income_range[1])]
+    
+    # Filtro categórico se houver variáveis categóricas
+    categorical_columns = df.select_dtypes(include=['object']).columns.tolist()
+    if categorical_columns:
+        selected_category = st.sidebar.selectbox(
+            "Filtrar por Categoria",
+            options=['Todos'] + categorical_columns
+        )
+        
+        if selected_category != 'Todos':
+            unique_values = df[selected_category].unique().tolist()
+            selected_values = st.sidebar.multiselect(
+                f"Valores de {selected_category}",
+                options=unique_values,
+                default=unique_values
+            )
+            df_filtered = df_filtered[df_filtered[selected_category].isin(selected_values)]
+else:
+    df_filtered = df.copy()
+
 # Informações do dataset
 st.sidebar.subheader("📊 Informações do Dataset")
 
 try:
     # Informações básicas
     st.sidebar.info(f"""
-    **Dimensões:** {df.shape[0]} linhas × {df.shape[1]} colunas
+    **Dimensões:** {df_filtered.shape[0]} linhas × {df_filtered.shape[1]} colunas
     **Variável Target:** {target_var}
-    **Missing Values:** {df.isnull().sum().sum()}
+    **Missing Values:** {df_filtered.isnull().sum().sum()}
     """)
     
     # Debug: Mostrar tipos de dados
@@ -400,7 +453,7 @@ try:
             st.error("⚠️ Nenhuma variável numérica encontrada!")
 
     # Análise da distribuição do target
-    target_dist = df[target_var].value_counts()
+    target_dist = df_filtered[target_var].value_counts()
     st.sidebar.subheader(f"🎯 Distribuição de {target_var}")
     
     try:
@@ -429,7 +482,20 @@ n_features = st.sidebar.slider(
 )
 
 # Aplicar SMOTE
-apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=True)
+apply_smote = st.sidebar.checkbox("Aplicar SMOTE", value=SMOTE_AVAILABLE)
+if not SMOTE_AVAILABLE:
+    st.sidebar.warning("SMOTE não disponível")
+
+# Seleção dinâmica de variáveis
+st.sidebar.subheader("📋 Seleção de Variáveis")
+available_features = [col for col in df_processed.columns if col != target_var]
+selected_features_manual = st.sidebar.multiselect(
+    "Selecionar variáveis manualmente (opcional):",
+    options=available_features,
+    default=[]
+)
+
+use_manual_selection = st.sidebar.checkbox("Usar seleção manual ao invés do RFE")
 
 # Seleção de modelos
 st.sidebar.subheader("🤖 Seleção de Modelos")
@@ -450,38 +516,26 @@ run_analysis = st.sidebar.button("🚀 Executar Análise", type="primary")
 if run_analysis and selected_models:
     
     try:
-        # Aplicar SMOTE e RFE
+        # Atualizar o df_processed com os dados filtrados
+        df_processed_filtered = df_processed.loc[df_filtered.index]
+        
+        # Aplicar SMOTE e RFE ou seleção manual
         with st.spinner("Processando dados..."):
-            if apply_smote:
-                X_processed, y_processed, selected_features = apply_smote_and_rfe(df_processed, target_var, n_features)
-                st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
+            if use_manual_selection and selected_features_manual:
+                # Usar seleção manual
+                X_processed = df_processed_filtered[selected_features_manual]
+                y_processed = df_processed_filtered[target_var]
+                selected_features = selected_features_manual
+                st.success(f"✅ Seleção manual aplicada! {len(selected_features)} variáveis selecionadas")
             else:
-                X = df_processed.drop(columns=[target_var])
-                y = df_processed[target_var]
-                
-                # Garantir que temos apenas variáveis numéricas
-                numeric_cols = X.select_dtypes(include=[np.number]).columns.tolist()
-                if len(numeric_cols) == 0:
-                    st.error("Nenhuma variável numérica encontrada!")
-                    st.stop()
-                
-                X = X[numeric_cols]
-                
-                # RFE básico
-                try:
-                    n_features_adj = min(n_features, X.shape[1])
-                    estimator = LogisticRegression(random_state=42, max_iter=1000)
-                    rfe = RFE(estimator=estimator, n_features_to_select=n_features_adj)
-                    rfe.fit(X, y)
-                    selected_features = X.columns[rfe.support_].tolist()
-                    X_processed = X[selected_features]
-                    y_processed = y
-                except:
-                    selected_features = X.columns.tolist()
-                    X_processed = X
-                    y_processed = y
-                
-                st.info("ℹ️ SMOTE não aplicado - usando dados originais")
+                # Usar RFE
+                X_processed, y_processed, selected_features = apply_smote_and_rfe(
+                    df_processed_filtered, target_var, n_features, apply_smote
+                )
+                if apply_smote and SMOTE_AVAILABLE:
+                    st.success(f"✅ SMOTE aplicado! Dataset balanceado: {len(y_processed)} amostras")
+                else:
+                    st.info("ℹ️ SMOTE não aplicado - usando dados originais")
         
         # Verificar se temos dados válidos após processamento
         if X_processed.empty or len(y_processed) == 0:
@@ -513,7 +567,7 @@ if run_analysis and selected_models:
                 st.stop()
     
         # Mostrar features selecionadas
-        st.subheader("🎯 Features Selecionadas via RFE")
+        st.subheader("🎯 Features Selecionadas")
         col1, col2 = st.columns(2)
         
         with col1:
@@ -610,13 +664,14 @@ if run_analysis and selected_models:
             fig_roc = go.Figure()
             
             for model_name in results.keys():
-                fpr, tpr, _ = roc_curve(y_test, results[model_name]['y_proba'])
-                fig_roc.add_trace(go.Scatter(
-                    x=fpr, y=tpr,
-                    mode='lines',
-                    name=f'{model_name} (AUC = {results[model_name]["auc"]:.3f})',
-                    line=dict(width=3)
-                ))
+                if results[model_name]['fpr'] is not None and results[model_name]['tpr'] is not None:
+                    fpr, tpr = results[model_name]['fpr'], results[model_name]['tpr']
+                    fig_roc.add_trace(go.Scatter(
+                        x=fpr, y=tpr,
+                        mode='lines',
+                        name=f'{model_name} (AUC = {results[model_name]["auc"]:.3f})',
+                        line=dict(width=3)
+                    ))
             
             # Linha diagonal
             fig_roc.add_trace(go.Scatter(
@@ -746,7 +801,7 @@ if run_analysis and selected_models:
             for i, feature in enumerate(reversed(top_features), 1):
                 with st.expander(f"{i}. {feature}"):
                     # Análise estatística da feature
-                    feature_stats = df_processed.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
+                    feature_stats = df_processed_filtered.groupby(target_var)[feature].agg(['mean', 'median', 'std']).round(3)
                     
                     col1, col2 = st.columns(2)
                     
@@ -757,7 +812,7 @@ if run_analysis and selected_models:
                     with col2:
                         # Boxplot da feature por classe
                         fig_box = px.box(
-                            df_processed, 
+                            df_processed_filtered, 
                             x=target_var, 
                             y=feature,
                             title=f'Distribuição de {feature} por classe'
@@ -772,34 +827,38 @@ else:
     Este dashboard permite analisar e modelar dados para previsão de reclamações de clientes.
     
     ### 🚀 Como usar:
-    1. **Configure os parâmetros** na sidebar à esquerda
-    2. **Selecione os modelos** que deseja treinar
-    3. **Clique em "Executar Análise"** para iniciar o processo
+    1. **Configure os filtros** na sidebar à esquerda para explorar subconjuntos dos dados
+    2. **Selecione as variáveis** manualmente ou use RFE para seleção automática
+    3. **Escolha os modelos** que deseja treinar e comparar
+    4. **Clique em "Executar Análise"** para iniciar o processo
     
     ### 📊 Funcionalidades:
-    - ⚖️ **Balanceamento de dados** com SMOTE
-    - 🎯 **Seleção de features** com RFE
+    - 🔍 **Filtros interativos** para exploração dos dados
+    - ⚖️ **Balanceamento de dados** com SMOTE (quando disponível)
+    - 🎯 **Seleção de features** com RFE ou manual
     - 🤖 **Múltiplos modelos** de Machine Learning
     - 📈 **Visualizações interativas** dos resultados
     - 🧠 **Interpretação automatizada** dos modelos
     """)
     
-    # Mostrar preview dos dados
-    st.subheader("👀 Preview dos Dados")
-    st.dataframe(df.head(), use_container_width=True)
-    
-    # Estatísticas básicas
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Total de Registros", f"{len(df):,}")
-    
-    with col2:
-        st.metric("Número de Features", len(df.columns) - 1)
-    
-    with col3:
-        target_balance = df[target_var].value_counts(normalize=True).min()
-        st.metric("Balanceamento", f"{target_balance:.1%}")
+    # Mostrar preview dos dados se disponível
+    if not df.empty:
+        st.subheader("👀 Preview dos Dados")
+        st.dataframe(df.head(), use_container_width=True)
+        
+        # Estatísticas básicas
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("Total de Registros", f"{len(df):,}")
+        
+        with col2:
+            st.metric("Número de Features", len(df.columns) - 1)
+        
+        with col3:
+            if target_var in df.columns:
+                target_balance = df[target_var].value_counts(normalize=True).min()
+                st.metric("Balanceamento", f"{target_balance:.1%}")
 
 # Footer
 st.markdown("---")

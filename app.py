@@ -166,12 +166,16 @@ def load_and_process_data():
         
         if 'Complain' not in df.columns:
             np.random.seed(42)
-            complaint_prob = (
-                (df.get('Recency', 50) > df.get('Recency', 50).quantile(0.7)) * 0.3 +
-                (df.get('Income', 50000) < df.get('Income', 50000).quantile(0.3)) * 0.2 +
-                (df.get('NumWebVisitsMonth', 5) > df.get('NumWebVisitsMonth', 5).quantile(0.8)) * 0.2 +
-                0.1
-            )
+            # Criar variável sintética baseada em características existentes
+            complaint_prob = 0.1  # Base probability
+            
+            if 'Recency' in df.columns:
+                complaint_prob += (df['Recency'] > df['Recency'].quantile(0.7)) * 0.3
+            if 'Income' in df.columns:
+                complaint_prob += (df['Income'] < df['Income'].quantile(0.3)) * 0.2
+            if 'NumWebVisitsMonth' in df.columns:
+                complaint_prob += (df['NumWebVisitsMonth'] > df['NumWebVisitsMonth'].quantile(0.8)) * 0.2
+            
             df['Complain'] = np.random.binomial(1, np.clip(complaint_prob, 0, 1))
         
     except FileNotFoundError:
@@ -225,16 +229,32 @@ def load_and_process_data():
     
     # Processar dados
     df_processed = df.copy()
+    
+    # Verificar se temos dados válidos
+    if len(df_processed) == 0:
+        raise ValueError("Dataset está vazio")
+    
+    # Processar colunas categóricas
     categorical_cols = df.select_dtypes(include=[object]).columns.tolist()
     if 'Complain' in categorical_cols:
         categorical_cols.remove('Complain')
     
     le_dict = {}
     for col in categorical_cols:
-        if col in df_processed.columns:
-            le = LabelEncoder()
-            df_processed[col] = le.fit_transform(df_processed[col].astype(str))
-            le_dict[col] = le
+        if col in df_processed.columns and len(df_processed[col].unique()) > 1:
+            try:
+                le = LabelEncoder()
+                df_processed[col] = le.fit_transform(df_processed[col].astype(str))
+                le_dict[col] = le
+            except Exception as e:
+                st.warning(f"⚠️ Erro ao processar {col}: {str(e)}")
+                continue
+    
+    # Garantir que Complain seja numérico
+    if 'Complain' in df_processed.columns:
+        if df_processed['Complain'].dtype == 'object':
+            df_processed['Complain'] = df_processed['Complain'].map({'yes': 1, 'no': 0})
+        df_processed['Complain'] = df_processed['Complain'].astype(int)
     
     return df, df_processed, 'Complain', le_dict
 
@@ -529,6 +549,11 @@ with tab3:
                     df_processed, target_var, selected_features, apply_smote, n_features
                 )
                 
+                # Verificar se o pré-processamento foi bem-sucedido
+                if X_processed is None or len(final_features) == 0:
+                    st.error("❌ Erro no pré-processamento dos dados. Tente com configurações diferentes.")
+                    st.stop()
+                
                 # Verificar se temos dados suficientes e classes balanceadas para train_test_split
                 min_class_count = pd.Series(y_processed).value_counts().min()
                 
@@ -561,6 +586,11 @@ with tab3:
                 st.session_state['selected_models'] = selected_models
             
             with st.spinner("🤖 Treinando modelos..."):
+                # Verificar se temos dados válidos para treinamento
+                if len(X_train) == 0 or len(X_test) == 0:
+                    st.error("❌ Dados de treino/teste inválidos!")
+                    st.stop()
+                
                 results = train_models(X_train, X_test, y_train, y_test, selected_models)
                 st.session_state['results'] = results
             
